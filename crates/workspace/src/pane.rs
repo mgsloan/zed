@@ -1835,6 +1835,24 @@ impl Pane {
         focus_handle: &FocusHandle,
         cx: &mut ViewContext<'_, Pane>,
     ) -> impl IntoElement {
+        let pending_keystrokes = cx.pending_input_keystrokes().unwrap_or(&[]);
+        let modifiers = cx.pending_modifiers().clone();
+        let trigger_key =
+            cx.bindings_for_action(&ActivateItem(ix)).iter().find_map(
+                |keybinding| match keybinding.remaining_keystrokes(pending_keystrokes) {
+                    Some([last_key]) if last_key.modifiers == modifiers => {
+                        Some(last_key.key.clone())
+                    }
+                    _ => None,
+                },
+            );
+
+        println!("!!!!!!!!!!!!!!!!!!!!!!!!!!! render tab");
+        log::info!(
+            "trig {ix:?} {trigger_key:?}, {:?}",
+            cx.bindings_for_action(&ActivateItem(ix))
+        );
+
         let project_path = item.project_path(cx);
 
         let is_active = ix == self.active_item_index;
@@ -1991,7 +2009,8 @@ impl Pane {
                 h_flex()
                     .gap_1()
                     .children(icon.map(|icon| icon.size(IconSize::Small).color(icon_color)))
-                    .child(label),
+                    .child(label)
+                    .children(trigger_key),
             );
 
         let single_entry_to_resolve = {

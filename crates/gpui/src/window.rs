@@ -3416,6 +3416,19 @@ impl<'a> WindowContext<'a> {
         self.window.pending_input.is_some()
     }
 
+    /// Returns keystrokes that make up the prefix of partially matched key bindings.
+    pub fn pending_keystrokes(&self) -> Option<&[Keystroke]> {
+        self.window
+            .pending_input
+            .as_ref()
+            .map(|pending| pending.keystrokes.as_slice())
+    }
+
+    /// Returns the currently pressed modifier keys.
+    pub fn pending_modifiers(&self) -> Modifiers {
+        self.window.pending_modifier.modifiers
+    }
+
     pub(crate) fn clear_pending_keystrokes(&mut self) {
         self.window.pending_input.take();
     }

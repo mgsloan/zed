@@ -60,6 +60,24 @@ impl KeyBinding {
         Some(self.keystrokes.len() > typed.len())
     }
 
+    /// Get the remaining keystrokes needed to complete this binding after the given prefix.
+    ///
+    /// Returns `None` if the prefix doesn't match the start of this binding's keystrokes.
+    /// Otherwise, returns a slice of the remaining keystrokes.
+    pub fn remaining_keystrokes(&self, prefix: &[Keystroke]) -> Option<&[Keystroke]> {
+        if prefix.len() > self.keystrokes.len() {
+            return None;
+        }
+
+        for (target, typed) in self.keystrokes.iter().zip(prefix.iter()) {
+            if !typed.should_match(target) {
+                return None;
+            }
+        }
+
+        Some(&self.keystrokes[prefix.len()..])
+    }
+
     /// Get the keystrokes associated with this binding
     pub fn keystrokes(&self) -> &[Keystroke] {
         self.keystrokes.as_slice()
