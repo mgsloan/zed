@@ -2411,27 +2411,37 @@ impl InlayHints {
             _ => None,
         });
 
+        let padding_right = lsp_hint.padding_right.unwrap_or(false);
+        let mut padding_left = lsp_hint.padding_left.unwrap_or(false);
+        dbg!(padding_right);
+        dbg!(padding_left);
+        let bias = if padding_right && !padding_left {
+            Bias::Right
+        } else {
+            Bias::Left
+        };
+        if force_no_type_left_padding && kind == Some(InlayHintKind::Type) {
+            padding_left = false;
+        }
+
         let position = buffer_handle.update(cx, |buffer, _| {
-            let position = buffer.clip_point_utf16(point_from_lsp(lsp_hint.position), Bias::Left);
+            let position = buffer.clip_point_utf16(point_from_lsp(lsp_hint.position), bias);
             if kind == Some(InlayHintKind::Parameter) {
                 buffer.anchor_before(position)
             } else {
                 buffer.anchor_after(position)
             }
         })?;
+        dbg!(&position);
         let label = Self::lsp_inlay_label_to_project(lsp_hint.label, server_id)
             .await
             .context("lsp to project inlay hint conversion")?;
-        let padding_left = if force_no_type_left_padding && kind == Some(InlayHintKind::Type) {
-            false
-        } else {
-            lsp_hint.padding_left.unwrap_or(false)
-        };
+        dbg!(&label);
 
         Ok(InlayHint {
             position,
             padding_left,
-            padding_right: lsp_hint.padding_right.unwrap_or(false),
+            padding_right,
             label,
             kind,
             tooltip: lsp_hint.tooltip.map(|tooltip| match tooltip {
