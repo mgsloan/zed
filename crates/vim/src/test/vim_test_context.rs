@@ -59,9 +59,9 @@ impl VimTestContext {
             SettingsStore::update_global(cx, |store, cx| {
                 store.update_user_settings::<VimModeSetting>(cx, |s| *s = Some(enabled));
             });
-            settings::KeymapFile::load_asset("keymaps/default-macos.json", cx).unwrap();
+            settings::KeymapFile::load_builtin("keymaps/default-macos.json", cx).unwrap();
             if enabled {
-                settings::KeymapFile::load_asset("keymaps/vim.json", cx).unwrap();
+                settings::KeymapFile::load_builtin("keymaps/vim.json", cx).unwrap();
             }
         });
 

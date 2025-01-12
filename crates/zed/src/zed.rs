@@ -43,6 +43,7 @@ use settings::{
 };
 use std::any::TypeId;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::{borrow::Cow, ops::Deref, path::Path, sync::Arc};
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::ActiveTheme;
@@ -945,6 +946,7 @@ fn open_log_file(workspace: &mut Workspace, cx: &mut ViewContext<Workspace>) {
 }
 
 pub fn handle_keymap_file_changes(
+    user_keymap_path: Rc<Path>,
     mut user_keymap_file_rx: mpsc::UnboundedReceiver<String>,
     cx: &mut AppContext,
     keymap_changed: impl Fn(Option<anyhow::Error>, &mut AppContext) + 'static,
@@ -981,35 +983,53 @@ pub fn handle_keymap_file_changes(
     load_default_keymap(cx);
 
     cx.spawn(move |cx| async move {
-        let mut user_keymap = KeymapFile::default();
+        let user_keymap_path = user_keymap_path.clone();
+        let mut user_keymap_content = "".to_owned();
+        let mut user_keymap_file = KeymapFile::default();
         loop {
             select_biased! {
                 _ = base_keymap_rx.next() => {}
                 _ = keyboard_layout_rx.next() => {}
-                user_keymap_content = user_keymap_file_rx.next() => {
-                    if let Some(user_keymap_content) = user_keymap_content {
-                        match KeymapFile::parse(&user_keymap_content) {
-                            Ok(keymap_content) => {
-                                cx.update(|cx| keymap_changed(None, cx)).log_err();
-                                user_keymap = keymap_content;
+                content = user_keymap_file_rx.next() => {
+                    if let Some(content) = content {
+                        match KeymapFile::parse_user(&user_keymap_path, &content) {
+                            Ok(keymap_file) => {
+                                cx.update(|cx| keymap_changed(None, cx)).ok();
+                                user_keymap_content = content;
+                                user_keymap_file = keymap_file;
                             }
                             Err(error) => {
-                                cx.update(|cx| keymap_changed(Some(error), cx)).log_err();
+                                cx.update(|cx| keymap_changed(Some(error), cx)).ok();
                             }
                         }
                     }
                 }
             }
-            cx.update(|cx| reload_keymaps(cx, &user_keymap)).ok();
+            cx.update(|cx| {
+                reload_keymaps(
+                    &user_keymap_path,
+                    &user_keymap_content,
+                    &user_keymap_file,
+                    cx,
+                )
+            })
+            .ok();
         }
     })
     .detach();
 }
 
-fn reload_keymaps(cx: &mut AppContext, keymap_content: &KeymapFile) {
+fn reload_keymaps(
+    user_keymap_path: &Path,
+    user_keymap_content: &str,
+    user_keymap_file: &KeymapFile,
+    cx: &mut AppContext,
+) {
     cx.clear_key_bindings();
     load_default_keymap(cx);
-    keymap_content.clone().add_to_cx(cx).log_err();
+    user_keymap_file
+        .register_user_bindings(user_keymap_path, user_keymap_content, cx)
+        .log_err();
     cx.set_menus(app_menus());
     cx.set_dock_menu(vec![MenuItem::action("New Window", workspace::NewWindow)]);
 }
@@ -1020,13 +1040,13 @@ pub fn load_default_keymap(cx: &mut AppContext) {
         return;
     }
 
-    KeymapFile::load_asset(DEFAULT_KEYMAP_PATH, cx).unwrap();
+    KeymapFile::load_builtin(DEFAULT_KEYMAP_PATH, cx).unwrap();
     if VimModeSetting::get_global(cx).0 {
-        KeymapFile::load_asset("keymaps/vim.json", cx).unwrap();
+        KeymapFile::load_builtin("keymaps/vim.json", cx).unwrap();
     }
 
     if let Some(asset_path) = base_keymap.asset_path() {
-        KeymapFile::load_asset(asset_path, cx).unwrap();
+        KeymapFile::load_builtin(asset_path, cx).unwrap();
     }
 }
 
@@ -3339,7 +3359,8 @@ mod tests {
                 PathBuf::from("/keymap.json"),
             );
             handle_settings_file_changes(settings_rx, cx, |_, _| {});
-            handle_keymap_file_changes(keymap_rx, cx, |_, _| {});
+            let user_keymap_path = Path::new("keymaps/default-macos.json");
+            handle_keymap_file_changes(user_keymap_path.into(), keymap_rx, cx, |_, _| {});
         });
         workspace
             .update(cx, |workspace, cx| {
@@ -3452,7 +3473,8 @@ mod tests {
             );
 
             handle_settings_file_changes(settings_rx, cx, |_, _| {});
-            handle_keymap_file_changes(keymap_rx, cx, |_, _| {});
+            let user_keymap_path = Path::new("keymaps/default-macos.json");
+            handle_keymap_file_changes(user_keymap_path.into(), keymap_rx, cx, |_, _| {});
         });
 
         cx.background_executor.run_until_parked();

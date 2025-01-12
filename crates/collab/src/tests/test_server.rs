@@ -303,7 +303,7 @@ impl TestServer {
             collab_ui::init(&app_state, cx);
             file_finder::init(cx);
             menu::init();
-            settings::KeymapFile::load_asset(os_keymap, cx).unwrap();
+            settings::KeymapFile::load_builtin(os_keymap, cx).unwrap();
             language_model::LanguageModelRegistry::test(cx);
             assistant::context_store::init(&client.clone().into());
         });

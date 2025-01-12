@@ -249,10 +249,11 @@ fn main() {
         fs.clone(),
         paths::settings_file().clone(),
     );
+    let user_keymap_path = paths::keymap_file();
     let user_keymap_file_rx = watch_config_file(
         &app.background_executor(),
         fs.clone(),
-        paths::keymap_file().clone(),
+        user_keymap_path.clone(),
     );
 
     #[cfg(unix)]
@@ -291,7 +292,12 @@ fn main() {
         }
         settings::init(cx);
         handle_settings_file_changes(user_settings_file_rx, cx, handle_settings_changed);
-        handle_keymap_file_changes(user_keymap_file_rx, cx, handle_keymap_changed);
+        handle_keymap_file_changes(
+            user_keymap_path.as_path().into(),
+            user_keymap_file_rx,
+            cx,
+            handle_keymap_changed,
+        );
         client::init_settings(cx);
         let user_agent = format!(
             "Zed/{} ({}; {})",

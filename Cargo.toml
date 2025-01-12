@@ -397,6 +397,7 @@ itertools = "0.14.0"
 jsonwebtoken = "9.3"
 jupyter-protocol = { version = "0.6.0" }
 jupyter-websocket-client = { version = "0.9.0" }
+json-spanned-value = "0.2.2"
 libc = "0.2"
 libsqlite3-sys = { version = "0.30.1", features = ["bundled"] }
 linkify = "0.10.0"
@@ -446,7 +447,9 @@ rust-embed = { version = "8.4", features = ["include-exclude"] }
 rustc-hash = "2.1.0"
 rustls = "0.21.12"
 rustls-native-certs = "0.8.0"
-schemars = { version = "0.8", features = ["impl_json_schema", "indexmap2"] }
+# schemars = { git = "https://github.com/zed-industries/schemars", rev = "4658b819a084ee9ebfa46e7bf2a7649e1b913402", features = ["impl_json_schema", "indexmap2", "spanned"] }
+schemars = { path = "crates/schemars/schemars", features = ["impl_json_schema", "indexmap2", "spanned"] }
+
 semver = "1.0"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_derive = { version = "1.0", features = ["deserialize_in_place"] }

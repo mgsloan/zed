@@ -182,7 +182,7 @@ impl ActionRegistry {
         let build_action = self
             .builders_by_name
             .get(name)
-            .ok_or_else(|| anyhow!("no action type registered for {}", name))?;
+            .ok_or_else(|| anyhow!("No action type registered for {}", name))?;
         (build_action)(params.unwrap_or_else(|| json!({})))
             .with_context(|| format!("Attempting to build action {}", name))
     }

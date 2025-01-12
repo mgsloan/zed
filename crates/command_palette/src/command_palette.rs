@@ -441,7 +441,7 @@ impl std::fmt::Debug for Command {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{path::Path, sync::Arc};
 
     use super::*;
     use editor::Editor;
@@ -635,8 +635,8 @@ mod tests {
             workspace::init(app_state.clone(), cx);
             init(cx);
             Project::init_settings(cx);
-            KeymapFile::parse(
-                r#"[
+            let content = r#"
+                [
                     {
                         "bindings": {
                             "cmd-n": "workspace::NewFile",
@@ -644,11 +644,12 @@ mod tests {
                             "cmd-shift-p": "command_palette::Toggle"
                         }
                     }
-                ]"#,
-            )
-            .unwrap()
-            .add_to_cx(cx)
-            .unwrap();
+                ]"#;
+            let path = Path::new("keymaps/default-macos.json");
+            KeymapFile::parse_user(path, content)
+                .unwrap()
+                .register_user_bindings(path, content, cx)
+                .unwrap();
             app_state
         })
     }

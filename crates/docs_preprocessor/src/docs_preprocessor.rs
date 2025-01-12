@@ -4,7 +4,6 @@ use mdbook::errors::Error;
 use mdbook::preprocess::{Preprocessor, PreprocessorContext as MdBookContext};
 use settings::KeymapFile;
 use std::sync::Arc;
-use util::asset_str;
 
 mod templates;
 
@@ -17,8 +16,8 @@ pub struct PreprocessorContext {
 
 impl PreprocessorContext {
     pub fn new() -> Result<Self> {
-        let macos_keymap = Arc::new(load_keymap("keymaps/default-macos.json")?);
-        let linux_keymap = Arc::new(load_keymap("keymaps/default-linux.json")?);
+        let macos_keymap = Arc::new(KeymapFile::parse_builtin("keymaps/default-macos.json")?);
+        let linux_keymap = Arc::new(KeymapFile::parse_builtin("keymaps/default-linux.json")?);
         Ok(Self {
             macos_keymap,
             linux_keymap,
@@ -33,20 +32,15 @@ impl PreprocessorContext {
         };
 
         keymap.blocks().iter().find_map(|block| {
-            block.bindings().iter().find_map(|(keystroke, a)| {
+            block.bindings().find_map(|(keystroke, a)| {
                 if a.to_string() == action {
-                    Some(keystroke.to_string())
+                    Some(keystroke.to_owned())
                 } else {
                     None
                 }
             })
         })
     }
-}
-
-fn load_keymap(asset_path: &str) -> Result<KeymapFile> {
-    let content = asset_str::<settings::SettingsAssets>(asset_path);
-    KeymapFile::parse(content.as_ref())
 }
 
 pub struct ZedDocsPreprocessor {

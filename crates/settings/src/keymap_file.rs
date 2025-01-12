@@ -1,7 +1,14 @@
-use crate::{settings_store::parse_json_with_comments, SettingsAssets};
-use anyhow::{anyhow, Context, Result};
-use collections::BTreeMap;
-use gpui::{Action, AppContext, KeyBinding, SharedString};
+use std::{ops::Range, path::Path, rc::Rc};
+
+use crate::{
+    settings_diagnostics::{SettingsDiagnostic, SettingsPathRef},
+    settings_store::parse_json_with_comments,
+    SettingsAssets,
+};
+use anyhow::{anyhow, Result};
+use collections::{BTreeMap, HashMap};
+use gpui::{Action, AppContext, KeyBinding, KeyBindingContextPredicate, SharedString};
+use json_spanned_value::Spanned;
 use schemars::{
     gen::{SchemaGenerator, SchemaSettings},
     schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation},
@@ -9,7 +16,7 @@ use schemars::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use util::{asset_str, ResultExt};
+use util::asset_str;
 
 #[derive(Debug, Deserialize, Default, Clone, JsonSchema)]
 #[serde(transparent)]
@@ -18,19 +25,17 @@ pub struct KeymapFile(Vec<KeymapBlock>);
 #[derive(Debug, Deserialize, Default, Clone, JsonSchema)]
 pub struct KeymapBlock {
     #[serde(default)]
-    context: Option<String>,
+    context: Option<Spanned<String>>,
     #[serde(default)]
     use_key_equivalents: Option<bool>,
-    bindings: BTreeMap<String, KeymapAction>,
+    bindings: BTreeMap<Spanned<String>, Spanned<KeymapAction>>,
 }
 
 impl KeymapBlock {
-    pub fn context(&self) -> Option<&str> {
-        self.context.as_deref()
-    }
-
-    pub fn bindings(&self) -> &BTreeMap<String, KeymapAction> {
-        &self.bindings
+    pub fn bindings(&self) -> impl Iterator<Item = (&str, &KeymapAction)> {
+        self.bindings
+            .iter()
+            .map(|(keystrokes, action)| (keystrokes.get_ref().as_ref(), action.get_ref()))
     }
 }
 
@@ -62,81 +67,176 @@ impl JsonSchema for KeymapAction {
 }
 
 impl KeymapFile {
-    pub fn load_asset(asset_path: &str, cx: &mut AppContext) -> Result<()> {
-        let content = asset_str::<SettingsAssets>(asset_path);
-
-        Self::parse(content.as_ref())?.add_to_cx(cx)
+    pub fn load_builtin(asset_path: &str, cx: &mut AppContext) -> Result<()> {
+        let content = asset_str::<SettingsAssets>(&asset_path);
+        let settings_path = SettingsPathRef::Builtin(asset_path);
+        let keymap_file = Self::parse(settings_path, &content)?;
+        keymap_file.register_bindings(settings_path, &content, cx)
     }
 
-    pub fn parse(content: &str) -> Result<Self> {
+    pub fn parse_builtin(asset_path: &str) -> Result<KeymapFile> {
+        let content = asset_str::<SettingsAssets>(&asset_path);
+        let settings_path = SettingsPathRef::Builtin(asset_path);
+        Self::parse(settings_path, &content)
+    }
+
+    pub fn parse_user(path: &Path, content: &str) -> Result<KeymapFile> {
+        let settings_path = SettingsPathRef::Path(path);
+        Self::parse(settings_path, &content)
+    }
+
+    fn parse(settings_path: SettingsPathRef, content: &str) -> Result<Self> {
         if content.is_empty() {
             return Ok(Self::default());
         }
         parse_json_with_comments::<Self>(content)
+            .map_err(|err| anyhow!("Error in {settings_path}: {err}"))
     }
 
-    pub fn add_to_cx(self, cx: &mut AppContext) -> Result<()> {
+    pub fn register_builtin_bindings(
+        &self,
+        asset_path: &str,
+        content: &str,
+        cx: &mut AppContext,
+    ) -> Result<()> {
+        self.register_bindings(SettingsPathRef::Builtin(asset_path), content, cx)
+    }
+
+    pub fn register_user_bindings(
+        &self,
+        path: &Path,
+        content: &str,
+        cx: &mut AppContext,
+    ) -> Result<()> {
+        self.register_bindings(SettingsPathRef::Path(path), content, cx)
+    }
+
+    fn register_bindings(
+        &self,
+        settings_path: SettingsPathRef,
+        content: &str,
+        cx: &mut AppContext,
+    ) -> Result<()> {
         let key_equivalents = crate::key_equivalents::get_key_equivalents(&cx.keyboard_layout());
+
+        let mut diagnostics = Vec::new();
 
         for KeymapBlock {
             context,
             use_key_equivalents,
             bindings,
-        } in self.0
+        } in self.0.iter()
         {
-            let bindings = bindings
-                .into_iter()
-                .filter_map(|(keystroke, action)| {
-                    let action = action.0;
+            let key_equivalents = if *use_key_equivalents == Some(true) {
+                key_equivalents.as_ref()
+            } else {
+                None
+            };
 
-                    // This is a workaround for a limitation in serde: serde-rs/json#497
-                    // We want to deserialize the action data as a `RawValue` so that we can
-                    // deserialize the action itself dynamically directly from the JSON
-                    // string. But `RawValue` currently does not work inside of an untagged enum.
-                    match action {
-                        Value::Array(items) => {
-                            let Ok([name, data]): Result<[serde_json::Value; 2], _> =
-                                items.try_into()
-                            else {
-                                return Some(Err(anyhow!("Expected array of length 2")));
-                            };
-                            let serde_json::Value::String(name) = name else {
-                                return Some(Err(anyhow!(
-                                    "Expected first item in array to be a string."
-                                )));
-                            };
-                            cx.build_action(&name, Some(data))
-                        }
-                        Value::String(name) => cx.build_action(&name, None),
-                        Value::Null => Ok(no_action()),
-                        _ => {
-                            return Some(Err(anyhow!("Expected two-element array, got {action:?}")))
+            let context_predicate: Option<Rc<KeyBindingContextPredicate>> =
+                if let Some(context) = context.as_ref() {
+                    match KeyBindingContextPredicate::parse(context) {
+                        Ok(context_predicate) => Some(context_predicate.into()),
+                        Err(err) => {
+                            diagnostics.push(SettingsDiagnostic {
+                                range: context.range(),
+                                message: err.to_string(),
+                            });
+                            continue;
                         }
                     }
-                    .with_context(|| {
-                        format!(
-                            "invalid binding value for keystroke {keystroke}, context {context:?}"
-                        )
-                    })
-                    .log_err()
-                    .map(|action| {
-                        KeyBinding::load(
-                            &keystroke,
-                            action,
-                            context.as_deref(),
-                            if use_key_equivalents.unwrap_or_default() {
-                                key_equivalents.as_ref()
-                            } else {
-                                None
-                            },
-                        )
-                    })
+                } else {
+                    None
+                };
+
+            let bindings = bindings
+                .into_iter()
+                .map(|(keystrokes, action_value)| {
+                    Self::build_key_binding(
+                        context.as_ref().map(|context| context.get_ref()),
+                        keystrokes,
+                        action_value,
+                        context_predicate.clone(),
+                        key_equivalents,
+                        cx,
+                    )
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .filter_map(|result| result.map_err(|err| diagnostics.push(err)).ok())
+                .collect::<Vec<_>>();
 
             cx.bind_keys(bindings);
         }
-        Ok(())
+
+        if let Some(message) = settings_path.diagnostics_to_string(10, &content, diagnostics) {
+            Err(anyhow!(message))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn build_key_binding(
+        context: Option<&String>,
+        keystrokes: &Spanned<String>,
+        action_value: &Spanned<KeymapAction>,
+        context_predicate: Option<Rc<KeyBindingContextPredicate>>,
+        key_equivalents: Option<&HashMap<char, char>>,
+        cx: &mut AppContext,
+    ) -> std::result::Result<KeyBinding, SettingsDiagnostic> {
+        let range = action_value.range();
+        let action_value = &action_value.get_ref().0;
+
+        let make_error_prefix =
+            || format!("Invalid binding for \"{keystrokes}\" in context \"{context:?}\"");
+
+        let make_unexpected_action_json_error = {
+            |range: &Range<usize>| SettingsDiagnostic {
+                range: range.clone(),
+                message: format!(
+                    "{}: Expected action to be a string  or a two-element array of [string, value]",
+                    make_error_prefix()
+                ),
+            }
+        };
+
+        let action = match action_value {
+            Value::Array(items) => {
+                if items.len() != 2 {
+                    return Err(make_unexpected_action_json_error(&range));
+                }
+                let name = &items[0];
+                let data = &items[1];
+                let serde_json::Value::String(name) = name else {
+                    return Err(make_unexpected_action_json_error(&range));
+                };
+                match cx.build_action(&name, Some(data.clone())) {
+                    Ok(action) => Ok(action),
+                    Err(err) => Err(SettingsDiagnostic {
+                        range: range.clone(),
+                        message: format!("{}: {}", make_error_prefix(), err),
+                    }),
+                }
+            }
+            Value::String(name) => match cx.build_action(&name, None) {
+                Ok(action) => Ok(action),
+                Err(err) => Err(SettingsDiagnostic {
+                    range: range.clone(),
+                    message: format!("{}: {}", make_error_prefix(), err),
+                }),
+            },
+            Value::Null => Ok(no_action()),
+            _ => Err(make_unexpected_action_json_error(&range)),
+        }?;
+
+        KeyBinding::load(
+            &keystrokes,
+            action,
+            context_predicate.clone(),
+            key_equivalents,
+        )
+        .map_err(|err| SettingsDiagnostic {
+            range: range.clone(),
+            message: format!("{}: {}", make_error_prefix(), err),
+        })
     }
 
     pub fn generate_json_schema(
@@ -207,7 +307,7 @@ fn no_action() -> Box<dyn gpui::Action> {
 
 #[cfg(test)]
 mod tests {
-    use crate::KeymapFile;
+    use crate::{KeymapFile, SettingsPathRef};
 
     #[test]
     fn can_deserialize_keymap_with_trailing_comma() {
@@ -222,6 +322,7 @@ mod tests {
                   "
 
         };
-        KeymapFile::parse(json).unwrap();
+        let path = Path::new("/keymap.json");
+        KeymapFile::parse_user(path, json).unwrap();
     }
 }
