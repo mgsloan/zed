@@ -6,7 +6,7 @@ use futures::{channel::mpsc, future::LocalBoxFuture, FutureExt, StreamExt};
 use gpui::{AppContext, AsyncAppContext, BorrowAppContext, Global, Task, UpdateGlobal};
 use paths::{local_settings_file_relative_path, EDITORCONFIG_NAME};
 use schemars::{gen::SchemaGenerator, schema::RootSchema, JsonSchema};
-use serde::{de::DeserializeOwned, Deserialize as _, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
 use std::{
     any::{type_name, Any, TypeId},
@@ -1343,6 +1343,46 @@ fn to_pretty_json(value: &impl Serialize, indent_size: usize, indent_prefix_len:
 
 pub fn parse_json_with_comments<T: DeserializeOwned>(content: &str) -> Result<T> {
     Ok(serde_json_lenient::from_str(content)?)
+}
+
+/// Implements `serde_json` deserialization for a type while also keeping the JSON value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WithJsonValue<T> {
+    pub inner: T,
+    pub json_value: serde_json::Value,
+}
+
+impl<'de, T> Deserialize<'de> for WithJsonValue<T>
+where
+    T: DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let json_value = serde_json::Value::deserialize(deserializer)?;
+        Ok(WithJsonValue {
+            inner: serde_json::from_value(json_value.clone()).map_err(serde::de::Error::custom)?,
+            json_value,
+        })
+    }
+}
+
+impl<T> JsonSchema for WithJsonValue<T>
+where
+    T: JsonSchema,
+{
+    fn is_referenceable() -> bool {
+        T::is_referenceable()
+    }
+
+    fn schema_name() -> String {
+        T::schema_name()
+    }
+
+    fn json_schema(gen: &mut SchemaGenerator) -> schemars::schema::Schema {
+        T::json_schema(gen)
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use crate::SharedString;
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Deserializer};
 use smallvec::SmallVec;
 use std::fmt;
 
@@ -195,6 +196,30 @@ pub enum KeyBindingContextPredicate {
         Box<KeyBindingContextPredicate>,
         Box<KeyBindingContextPredicate>,
     ),
+}
+
+impl<'de> Deserialize<'de> for KeyBindingContextPredicate {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let source = String::deserialize(deserializer)?;
+        KeyBindingContextPredicate::parse(&source).map_err(serde::de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for KeyBindingContextPredicate {
+    fn is_referenceable() -> bool {
+        String::is_referenceable()
+    }
+
+    fn schema_name() -> String {
+        String::schema_name()
+    }
+
+    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        String::json_schema(gen)
+    }
 }
 
 impl fmt::Display for KeyBindingContextPredicate {

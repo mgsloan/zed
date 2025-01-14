@@ -34,31 +34,19 @@ impl KeymapBlock {
     }
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
-#[serde(transparent)]
-pub struct KeymapAction(Value);
-
-impl std::fmt::Display for KeymapAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Value::String(s) => write!(f, "{}", s),
-            Value::Array(arr) => {
-                let strings: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
-                write!(f, "{}", strings.join(", "))
-            }
-            _ => write!(f, "{}", self.0),
-        }
-    }
-}
-
-impl JsonSchema for KeymapAction {
-    fn schema_name() -> String {
-        "KeymapAction".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        Schema::Bool(true)
-    }
+#[derive(
+    Debug,
+    Deserialize,
+    Clone,
+    // Note that the derived schema is not used for the keymap schema - instead it is generated in
+    // `generate_json_schema` below.
+    JsonSchema,
+)]
+#[serde(untagged)]
+pub enum KeymapAction {
+    NoAction,
+    Plain(String),
+    WithData(String, Value),
 }
 
 impl KeymapFile {
