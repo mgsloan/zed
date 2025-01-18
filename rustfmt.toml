@@ -1,0 +1,16 @@
+# error_on_line_overflow = true
+# error_on_unformatted = true
+
+newline_style = "Unix"
+format_code_in_doc_comments = true
+reorder_impl_items = true
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+
+# Seems kinda nice, but a lot of diff
+#
+# overflow_delimited_expr = true
+
+# Unfortunately no option to leave them as is if under max line width.
+#
+# format_strings = true
