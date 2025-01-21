@@ -183,6 +183,22 @@ impl<'a, T: 'static> ModelContext<'a, T> {
     }
 
     /// Tell GPUI that this model has changed and observers of it should be notified.
+    #[cfg(debug_assertions)]
+    #[track_caller]
+    pub fn notify(&mut self) {
+        let entity_id = self.model_state.entity_id;
+        if self.app.entities_to_debug.contains(&entity_id) {
+            log::debug!(
+                "Notify of {} called from {}",
+                self.name.unwrap_or("unnamed entity"),
+                std::panic::Location::caller()
+            );
+        }
+        self.app.notify(entity_id);
+    }
+
+    /// Tell GPUI that this model has changed and observers of it should be notified.
+    #[cfg(not(debug_assertions))]
     pub fn notify(&mut self) {
         self.app.notify(self.model_state.entity_id);
     }

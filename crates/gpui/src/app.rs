@@ -24,6 +24,7 @@ use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
 pub use entity_map::*;
 use http_client::HttpClient;
 pub use model_context::*;
+use smallvec::SmallVec;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_context::*;
 use util::ResultExt;
@@ -263,6 +264,8 @@ pub struct AppContext {
     pub(crate) propagate_event: bool,
     pub(crate) prompt_builder: Option<PromptBuilder>,
     pub(crate) refresh_observers: FxHashMap<WindowId, Vec<Subscription>>,
+    #[cfg(debug_assertions)]
+    pub(crate) entities_to_debug: SmallVec<[EntityId; 2]>,
 
     #[cfg(any(test, feature = "test-support", debug_assertions))]
     pub(crate) name: Option<&'static str>,
@@ -325,6 +328,9 @@ impl AppContext {
                 layout_id_buffer: Default::default(),
                 propagate_event: true,
                 prompt_builder: Some(PromptBuilder::Default),
+
+                #[cfg(debug_assertions)]
+                entities_to_debug: SmallVec::new(),
 
                 #[cfg(any(test, feature = "test-support", debug_assertions))]
                 name: None,
