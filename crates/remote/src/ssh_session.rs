@@ -23,7 +23,7 @@ use gpui::{
 use itertools::Itertools;
 use parking_lot::Mutex;
 use paths;
-use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
+use release_channel::{AppBuildInfo, AppVersion, ReleaseChannel};
 use rpc::{
     proto::{self, build_typed_envelope, Envelope, EnvelopedMessage, PeerId, RequestMessage},
     AnyProtoClient, EntityMessageSubscriber, ErrorExt, ProtoClient, ProtoMessageHandlerSet,
@@ -1533,7 +1533,7 @@ impl SshRemoteConnection {
             (
                 ReleaseChannel::global(cx),
                 AppVersion::global(cx),
-                AppCommitSha::try_global(cx),
+                AppBuildInfo::global_or_default(cx).commit_sha.clone(),
             )
         })?;
         this.remote_binary_path = Some(
@@ -1683,14 +1683,12 @@ impl SshRemoteConnection {
         delegate: &Arc<dyn SshClientDelegate>,
         release_channel: ReleaseChannel,
         version: SemanticVersion,
-        commit: Option<AppCommitSha>,
+        commit: Option<String>,
         cx: &mut AsyncApp,
     ) -> Result<PathBuf> {
         let version_str = match release_channel {
             ReleaseChannel::Nightly => {
-                let commit = commit.map(|s| s.0.to_string()).unwrap_or_default();
-
-                format!("{}-{}", version, commit)
+                format!("{}-{}", version, commit.unwrap_or_default())
             }
             ReleaseChannel::Dev => "build".to_string(),
             _ => version.to_string(),

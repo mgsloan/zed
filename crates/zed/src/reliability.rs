@@ -6,9 +6,10 @@ use client::{telemetry, TelemetrySettings};
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{App, SemanticVersion};
 use http_client::{self, HttpClient, HttpClientWithUrl, HttpRequestExt, Method};
+use log::kv::ToKey;
 use paths::{crashes_dir, crashes_retired_dir};
 use project::Project;
-use release_channel::{ReleaseChannel, RELEASE_CHANNEL};
+use release_channel::{AppBuildInfo, ReleaseChannel, RELEASE_CHANNEL};
 use settings::Settings;
 use smol::stream::StreamExt;
 use std::{
@@ -25,6 +26,7 @@ static PANIC_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub fn init_panic_hook(
     app_version: SemanticVersion,
+    app_build_info: AppBuildInfo,
     system_id: Option<String>,
     installation_id: Option<String>,
     session_id: String,
@@ -50,16 +52,33 @@ pub fn init_panic_hook(
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "Box<Any>".to_string());
 
+        let github_permalink = match (info.location(), &app_build_info.commit_sha) {
+            (Some(location), Some(commit_sha)) => Some(format!(
+                "https://github.com/zed-industries/zed/blob/{}/src/{}#L{}",
+                commit_sha,
+                location.file(),
+                location.line()
+            )),
+            _ => None,
+        };
+
         if *release_channel::RELEASE_CHANNEL == ReleaseChannel::Dev {
             let location = info.location().unwrap();
             let backtrace = Backtrace::new();
             eprintln!(
-                "Thread {:?} panicked with {:?} at {}:{}:{}\n{:?}",
+                "Thread {:?} panicked with {:?} at {}:{}:{}\n{}{:?}",
                 thread_name,
                 payload,
                 location.file(),
                 location.line(),
                 location.column(),
+                match github_permalink {
+                    Some(github_permalink) if app_build_info.had_modified_files => format!(
+                        "{github_permalink} (may not be uploaded, and repo had modified files)\n"
+                    ),
+                    Some(github_permalink) => format!("{github_permalink} (may not be uploaded)\n"),
+                    _ => "".to_string(),
+                },
                 backtrace,
             );
             std::process::exit(-1);
@@ -95,6 +114,14 @@ pub fn init_panic_hook(
             symbols.drain(0..=ix);
         }
 
+        let telemetry_app_build_info =
+            app_build_info
+                .commit_sha
+                .map(|commit_sha| telemetry_events::AppBuildInfo {
+                    commit_sha,
+                    had_modified_files: app_build_info.had_modified_files,
+                });
+
         let panic_data = telemetry_events::Panic {
             thread: thread_name.into(),
             payload,
@@ -103,6 +130,7 @@ pub fn init_panic_hook(
                 line: location.line(),
             }),
             app_version: app_version.to_string(),
+            app_build_info: telemetry_app_build_info,
             release_channel: RELEASE_CHANNEL.dev_name().into(),
             target: env!("TARGET").to_owned().into(),
             os_name: telemetry::os_name(),

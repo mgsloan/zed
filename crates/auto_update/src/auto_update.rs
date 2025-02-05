@@ -7,7 +7,7 @@ use gpui::{
 };
 use http_client::{AsyncBody, HttpClient, HttpClientWithUrl};
 use paths::remote_servers_dir;
-use release_channel::{AppCommitSha, ReleaseChannel};
+use release_channel::{AppBuildInfo, ReleaseChannel};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsSources, SettingsStore};
@@ -449,9 +449,12 @@ impl AutoUpdater {
 
         let should_download = match *RELEASE_CHANNEL {
             ReleaseChannel::Nightly => cx
-                .update(|cx| AppCommitSha::try_global(cx).map(|sha| release.version != sha.0))
-                .ok()
-                .flatten()
+                .update(|cx| {
+                    AppBuildInfo::global_or_default(cx)
+                        .commit_sha
+                        .as_ref()
+                        .map_or(true, |sha| release.version != *sha)
+                })
                 .unwrap_or(true),
             _ => release.version.parse::<SemanticVersion>()? > current_version,
         };

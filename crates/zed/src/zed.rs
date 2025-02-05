@@ -34,7 +34,7 @@ use project_panel::ProjectPanel;
 use prompt_library::PromptBuilder;
 use quick_action_bar::QuickActionBar;
 use recent_projects::open_ssh_project;
-use release_channel::{AppCommitSha, ReleaseChannel};
+use release_channel::{AppBuildInfo, ReleaseChannel};
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
 use settings::{
@@ -880,9 +880,10 @@ fn about(
     let release_channel = ReleaseChannel::global(cx).display_name();
     let version = env!("CARGO_PKG_VERSION");
     let message = format!("{release_channel} {version}");
-    let detail = AppCommitSha::try_global(cx).map(|sha| sha.0.clone());
+    let app_build_info = AppBuildInfo::global_or_default(cx);
+    let detail = format!("{}", app_build_info);
 
-    let prompt = window.prompt(PromptLevel::Info, &message, detail.as_deref(), &["OK"], cx);
+    let prompt = window.prompt(PromptLevel::Info, &message, Some(&detail), &["OK"], cx);
     cx.foreground_executor()
         .spawn(async {
             prompt.await.ok();

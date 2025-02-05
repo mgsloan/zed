@@ -2,7 +2,7 @@
 
 #![deny(missing_docs)]
 
-use std::{env, str::FromStr, sync::LazyLock};
+use std::{env, fmt::Display, str::FromStr, sync::LazyLock};
 
 use gpui::{App, Global, SemanticVersion};
 
@@ -23,24 +23,49 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
         _ => panic!("invalid release channel {}", *RELEASE_CHANNEL_NAME),
     });
 
-/// The Git commit SHA that Zed was built at.
+/// Git repo information for the build.
 #[derive(Clone)]
-pub struct AppCommitSha(pub String);
+pub struct AppBuildInfo {
+    /// Git commit SHA the app was built at.
+    pub commit_sha: Option<String>,
+    /// Whether some tracked files had modifications.
+    pub had_modified_files: bool,
+}
 
-struct GlobalAppCommitSha(AppCommitSha);
+const DEFAULT_APP_BUILD_INFO: AppBuildInfo = AppBuildInfo {
+    commit_sha: None,
+    had_modified_files: false,
+};
 
-impl Global for GlobalAppCommitSha {}
+struct GlobalAppBuildInfo(AppBuildInfo);
 
-impl AppCommitSha {
-    /// Returns the global [`AppCommitSha`], if one is set.
-    pub fn try_global(cx: &App) -> Option<AppCommitSha> {
-        cx.try_global::<GlobalAppCommitSha>()
-            .map(|sha| sha.0.clone())
+impl Global for GlobalAppBuildInfo {}
+
+impl AppBuildInfo {
+    /// Returns the global [`AppBuildInfo`] if set, otherwise returns default.
+    pub fn global_or_default(cx: &App) -> &AppBuildInfo {
+        cx.try_global::<GlobalAppBuildInfo>()
+            .map_or(&DEFAULT_APP_BUILD_INFO, |global| &global.0)
     }
 
-    /// Sets the global [`AppCommitSha`].
-    pub fn set_global(sha: AppCommitSha, cx: &mut App) {
-        cx.set_global(GlobalAppCommitSha(sha))
+    /// Sets the global [`AppBuildInfo`].
+    pub fn set_global(info: AppBuildInfo, cx: &mut App) {
+        cx.set_global(GlobalAppBuildInfo(info))
+    }
+}
+
+impl Display for AppBuildInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.commit_sha {
+            Some(commit_sha) => {
+                if self.had_modified_files {
+                    write!(f, "{} with modified files", commit_sha)
+                } else {
+                    write!(f, "{}", commit_sha)
+                }
+            }
+            None => write!(f, "No build info"),
+        }
     }
 }
 

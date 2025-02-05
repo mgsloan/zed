@@ -256,6 +256,12 @@ pub struct LocationData {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AppBuildInfo {
+    pub commit_sha: String,
+    pub had_modified_files: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Panic {
     /// The name of the thread that panicked
     pub thread: String,
@@ -264,6 +270,9 @@ pub struct Panic {
     /// The location of the panic (file, line number)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location_data: Option<LocationData>,
+    /// Info about the git repository used for the build.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_build_info: Option<AppBuildInfo>,
     pub backtrace: Vec<String>,
     /// Zed version number
     pub app_version: String,

@@ -1,7 +1,7 @@
 use client::telemetry;
 use gpui::{App, Task, Window};
 use human_bytes::human_bytes;
-use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
+use release_channel::{AppBuildInfo, AppVersion, ReleaseChannel};
 use serde::Serialize;
 use std::{env, fmt::Display};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
@@ -30,7 +30,7 @@ impl SystemSpecs {
         let architecture = env::consts::ARCH;
         let commit_sha = match release_channel {
             ReleaseChannel::Dev | ReleaseChannel::Nightly => {
-                AppCommitSha::try_global(cx).map(|sha| sha.0.clone())
+                AppBuildInfo::global_or_default(cx).commit_sha.clone()
             }
             _ => None,
         };
