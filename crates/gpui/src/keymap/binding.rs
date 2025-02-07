@@ -1,18 +1,20 @@
-use std::rc::Rc;
+use std::{ops::Deref, rc::Rc};
 
 use collections::HashMap;
 
 use crate::{Action, InvalidKeystrokeError, KeyBindingContextPredicate, Keystroke};
 use smallvec::SmallVec;
 
+pub type KeyBinding = KeyBindingFor<Box<dyn Action>>;
+
 /// A keybinding and its associated metadata, from the keymap.
-pub struct KeyBinding {
-    pub(crate) action: Box<dyn Action>,
+pub struct KeyBindingFor<T> {
+    pub(crate) action: T,
     pub(crate) keystrokes: SmallVec<[Keystroke; 2]>,
     pub(crate) context_predicate: Option<Rc<KeyBindingContextPredicate>>,
 }
 
-impl Clone for KeyBinding {
+impl Clone for KeyBindingFor<Box<dyn Action>> {
     fn clone(&self) -> Self {
         KeyBinding {
             action: self.action.boxed_clone(),
@@ -22,7 +24,7 @@ impl Clone for KeyBinding {
     }
 }
 
-impl KeyBinding {
+impl KeyBindingFor<Box<dyn Action>> {
     /// Construct a new keybinding from the given data. Panics on parse error.
     pub fn new<A: Action>(keystrokes: &str, action: A, context: Option<&str>) -> Self {
         let context_predicate = if let Some(context) = context {
@@ -61,7 +63,9 @@ impl KeyBinding {
             context_predicate,
         })
     }
+}
 
+impl<T: Action> KeyBindingFor<T> {
     /// Check if the given keystrokes match this binding.
     pub fn match_keystrokes(&self, typed: &[Keystroke]) -> Option<bool> {
         if self.keystrokes.len() < typed.len() {
@@ -93,7 +97,7 @@ impl KeyBinding {
     }
 }
 
-impl std::fmt::Debug for KeyBinding {
+impl<T: Action> std::fmt::Debug for KeyBindingFor<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeyBinding")
             .field("keystrokes", &self.keystrokes)
