@@ -64,7 +64,9 @@ pub trait TextSpace {
     /// positions and deltas.
     type Type;
     /// The type used for the `column` field of `Point`, typically `Chars<Delta>`.
-    type Column;
+    type Column: Position;
+    // todo! document
+    type DeltaSpace: TextSpace<Type = Relative>;
 }
 
 /// Almost always used as the type for `TextSpace::Type`.
@@ -79,6 +81,7 @@ pub struct Buffer;
 impl TextSpace for Buffer {
     type Type = Absolute;
     type Column = Chars<Delta>;
+    type DeltaSpace = Delta;
 }
 
 /// `TextSpace` for differences in position.
@@ -86,6 +89,7 @@ pub struct Delta;
 impl TextSpace for Delta {
     type Type = Relative;
     type Column = Chars<Delta>;
+    type DeltaSpace = Delta;
 }
 
 /// `TextSpace` that uses UTF16 code units.
@@ -93,6 +97,7 @@ pub struct Utf16<T>(T);
 impl<Space: TextSpace> TextSpace for Utf16<Space> {
     type Type = Space::Type;
     type Column = OffsetUtf16<Delta>;
+    type DeltaSpace = Delta;
 }
 
 pub struct Point<Space: TextSpace> {
@@ -143,30 +148,77 @@ pub struct Chars<Space> {
 
 // todo! rename `Space` type variable to `S`?
 
+impl<Space: TextSpace> Point<Space> {
+    pub fn new<R, C>(row: R, column: C) -> Self
+    where
+        R: Into<Row<Space>>,
+        C: Into<Space::Column>,
+    {
+        Point {
+            row: row.into(),
+            column: column.into(),
+        }
+    }
+
+    /*
+    pub fn row_range(range: Range<Row<Space>>) -> Range<Self> {
+        Point::new(range.start, 0)..Point::new(range.end, 0)
+    }
+    */
+}
+
+impl<Space> Row<Space>
+where
+    Space: TextSpace,
+{
+    pub const fn new(row_count: u32) -> Self {
+        Self {
+            row_count,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Utf16 doesn't affect row numbers.
+    ///
+    /// todo! proper docs.
+    fn from_utf16(row: Row<Utf16<Space>>) -> Self {
+        Row::new(self.row_count)
+    }
+}
+
 impl<Space> Offset<Space>
 where
     Space: TextSpace,
 {
-    const ZERO: Self = Self::new(0);
-
     pub const fn new(byte_count: u32) -> Self {
         Self {
             byte_count,
             _phantom: PhantomData,
         }
     }
+}
 
-    pub const fn is_zero(self) -> bool {
-        self.byte_count == 0
+impl<Space> OffsetUtf16<Space>
+where
+    Space: TextSpace,
+{
+    pub const fn new(code_unit_count: u32) -> Self {
+        Self {
+            code_unit_count,
+            _phantom: PhantomData,
+        }
     }
+}
 
-    pub const fn to_delta(self) -> Offset<Delta> {
-        Offset::new(self.byte_count)
-    }
-
-    // todo! document why private
-    const fn from_delta(delta: Offset<Delta>) -> Self {
-        Self::new(delta.byte_count)
+impl<Space> Chars<Space>
+where
+    Space: TextSpace,
+{
+    pub const fn new(char_count: u32) -> Self {
+        Self {
+            char_count,
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -266,6 +318,151 @@ impl<Space> Debug for Offset<Space> {
 
 fn type_name<T>() -> &'static str {
     std::any::type_name::<T>().split("::").last().unwrap()
+}
+
+// Conversions to/from delta
+
+pub trait Position {
+    // todo! rename?
+    type Delta;
+
+    const ZERO: Self;
+    const MAX: Self;
+
+    fn is_zero(self) -> bool
+    where
+        Self: Sized + PartialEq,
+    {
+        self == Self::ZERO
+    }
+
+    // todo! Verify these are zero cost or use transmute
+    fn to_delta(self) -> Self::Delta;
+    // todo! make this private by splitting into different trait? Or just name it something scary
+    fn from_delta(delta: Self::Delta) -> Self;
+}
+
+impl<Space: TextSpace<Column = Chars<Delta>>> Position for Point<Space> {
+    type Delta = Point<Delta>;
+
+    const ZERO: Self = Self::ZERO;
+    const MAX: Self = Self::MAX;
+
+    fn to_delta(self) -> Self::Delta {
+        Point {
+            row: self.row.to_delta(),
+            column: self.column.to_delta(),
+        }
+    }
+
+    fn from_delta(delta: Self::Delta) -> Self {
+        Point {
+            row: delta.row.from_delta(),
+            column: delta.column.from_delta(),
+        }
+    }
+}
+
+impl Position for Point<Utf16<Delta>> {
+    type Delta = Point<Utf16<Delta>>;
+
+    const ZERO: Self = Self::ZERO;
+    const MAX: Self = Self::MAX;
+
+    fn to_delta(self) -> Self::Delta {
+        Point {
+            row: self.row.to_delta(),
+            column: self.column.to_delta(),
+        }
+    }
+
+    fn from_delta(delta: Self::Delta) -> Self {
+        Point {
+            row: delta.row.from_delta(),
+            column: delta.column.from_delta(),
+        }
+    }
+}
+
+impl<Space: TextSpace<Type = Absolute>> Position for Point<Utf16<Space>> {
+    type Delta = Point<Utf16<Delta>>;
+
+    const ZERO: Self = Self::ZERO;
+    const MAX: Self = Self::MAX;
+
+    fn to_delta(self) -> Self::Delta {
+        Point {
+            row: self.row.to_delta(),
+            column: self.column.to_delta(),
+        }
+    }
+
+    fn from_delta(delta: Self::Delta) -> Self {
+        Point {
+            row: Row::<Utf16<Space>>::from_delta(delta.row),
+            column: OffsetUtf16::<Space>::from_delta(delta.column),
+        }
+    }
+}
+
+impl<Space: TextSpace> Position for Row<Space> {
+    type Delta = Row<Delta>;
+
+    const ZERO: Self = Self::new(0);
+    const MAX: Self = Self::new(u32::MAX);
+
+    fn to_delta(self) -> Self::Delta {
+        Row::new(self.row_count)
+    }
+
+    fn from_delta(delta: Self::Delta) -> Self {
+        Self::new(delta.row_count)
+    }
+}
+
+impl<Space: TextSpace> Position for Offset<Space> {
+    type Delta = Offset<Delta>;
+
+    const ZERO: Self = Self::new(0);
+    const MAX: Self = Self::new(u32::MAX);
+
+    fn to_delta(self) -> Self::Delta {
+        Offset::new(self.byte_count)
+    }
+
+    fn from_delta(delta: Self::Delta) -> Self {
+        Self::new(delta.byte_count)
+    }
+}
+
+impl<Space: TextSpace> Position for OffsetUtf16<Space> {
+    type Delta = OffsetUtf16<Delta>;
+
+    const ZERO: Self = Self::new(0);
+    const MAX: Self = Self::new(u32::MAX);
+
+    fn to_delta(self) -> Self::Delta {
+        OffsetUtf16::new(self.code_unit_count)
+    }
+
+    fn from_delta(delta: Self::Delta) -> Self {
+        Self::new(delta.code_unit_count)
+    }
+}
+
+impl<Space: TextSpace> Position for Chars<Space> {
+    type Delta = Chars<Delta>;
+
+    const ZERO: Self = Self::new(0);
+    const MAX: Self = Self::new(u32::MAX);
+
+    fn to_delta(self) -> Self::Delta {
+        Chars::new(self.char_count)
+    }
+
+    fn from_delta(delta: Self::Delta) -> Self {
+        Self::new(delta.char_count)
+    }
 }
 
 // Space conversions
