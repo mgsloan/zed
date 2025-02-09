@@ -1,7 +1,9 @@
 mod chunk;
+mod delta;
 mod offset_utf16;
-mod point;
 mod point_utf16;
+mod position;
+mod saturating_sub;
 mod unclipped;
 
 use chunk::Chunk;
@@ -15,9 +17,11 @@ use std::{
 use sum_tree::{Bias, Dimension, SumTree};
 
 pub use chunk::ChunkSlice;
+pub use delta::{DeltaColumn, DeltaOffset, DeltaPoint, DeltaRow};
 pub use offset_utf16::OffsetUtf16;
-pub use point::Point;
 pub use point_utf16::PointUtf16;
+pub use position::{Column, Offset, OffsetRangeExt, Point, Row, Utf16, Utf8};
+pub use saturating_sub::SaturatingSub;
 pub use unclipped::Unclipped;
 
 #[derive(Clone, Default)]
@@ -177,15 +181,15 @@ impl Rope {
     fn push_chunk(&mut self, mut chunk: ChunkSlice) {
         self.chunks.update_last(
             |last_chunk| {
-                let split_ix = if last_chunk.text.len() + chunk.len() <= chunk::MAX_BASE {
+                let split_ix = if last_chunk.len() + chunk.len().to_delta() <= chunk::MAX_BASE {
                     chunk.len()
                 } else {
                     let mut split_ix = cmp::min(
-                        chunk::MIN_BASE.saturating_sub(last_chunk.text.len()),
+                        chunk::MIN_BASE.saturating_sub(last_chunk.len()),
                         chunk.len(),
                     );
                     while !chunk.is_char_boundary(split_ix) {
-                        split_ix += 1;
+                        split_ix += 1.into();
                     }
                     split_ix
                 };
@@ -306,7 +310,7 @@ impl Rope {
 
     pub fn offset_to_point(&self, offset: usize) -> Point {
         if offset >= self.summary().len {
-            return self.summary().lines;
+            return self.summary().lines.0;
         }
         let mut cursor = self.chunks.cursor::<(usize, Point)>(&());
         cursor.seek(&offset, Bias::Left, &());
@@ -331,7 +335,7 @@ impl Rope {
     }
 
     pub fn point_to_point_utf16(&self, point: Point) -> PointUtf16 {
-        if point >= self.summary().lines {
+        if point >= self.summary().lines.0 {
             return self.summary().lines_utf16();
         }
         let mut cursor = self.chunks.cursor::<(Point, PointUtf16)>(&());
@@ -344,7 +348,7 @@ impl Rope {
     }
 
     pub fn point_to_offset(&self, point: Point) -> usize {
-        if point >= self.summary().lines {
+        if point >= self.summary().lines.0 {
             return self.summary().len;
         }
         let mut cursor = self.chunks.cursor::<(Point, usize)>(&());
@@ -379,7 +383,7 @@ impl Rope {
 
     pub fn unclipped_point_utf16_to_point(&self, point: Unclipped<PointUtf16>) -> Point {
         if point.0 >= self.summary().lines_utf16() {
-            return self.summary().lines;
+            return self.summary().lines.0;
         }
         let mut cursor = self.chunks.cursor::<(PointUtf16, Point)>(&());
         cursor.seek(&point.0, Bias::Left, &());
@@ -431,7 +435,7 @@ impl Rope {
             let overshoot = point - cursor.start();
             *cursor.start() + chunk.as_slice().clip_point(overshoot, bias)
         } else {
-            self.summary().lines
+            self.summary().lines.0
         }
     }
 
@@ -673,7 +677,7 @@ impl<'a> Chunks<'a> {
                 found = self.offset <= self.range.end;
             } else {
                 self.chunks
-                    .search_forward(|summary| summary.text.lines.row > 0, &());
+                    .search_forward(|summary| summary.text.lines.0.row > 0, &());
                 self.offset = *self.chunks.start();
 
                 if let Some(newline_ix) = self.peek().and_then(|chunk| chunk.find('\n')) {
@@ -728,7 +732,7 @@ impl<'a> Chunks<'a> {
         }
 
         self.chunks
-            .search_backward(|summary| summary.text.lines.row > 0, &());
+            .search_backward(|summary| summary.text.lines.0.row > 0, &());
         self.offset = *self.chunks.start();
         if let Some(chunk) = self.chunks.item() {
             if let Some(newline_ix) = chunk.text.rfind('\n') {
@@ -970,29 +974,29 @@ impl sum_tree::Summary for ChunkSummary {
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct TextSummary {
     /// Length in bytes.
-    pub len: usize,
+    pub len: DeltaOffset,
     /// Length in UTF-8.
-    pub chars: usize,
+    pub chars: Utf8<DeltaOffset>,
     /// Length in UTF-16 code units
-    pub len_utf16: OffsetUtf16,
+    pub len_utf16: Utf16<DeltaOffset>,
     /// A point representing the number of lines and the length of the last line
-    pub lines: Point,
+    pub lines: DeltaPoint,
     /// How many `char`s are in the first line
-    pub first_line_chars: u32,
+    pub first_line_chars: Utf8<DeltaOffset>,
     /// How many `char`s are in the last line
-    pub last_line_chars: u32,
+    pub last_line_chars: Utf8<DeltaOffset>,
     /// How many UTF-16 code units are in the last line
-    pub last_line_len_utf16: u32,
+    pub last_line_len_utf16: Utf8<DeltaOffset>,
     /// The row idx of the longest row
-    pub longest_row: u32,
+    pub longest_row: DeltaRow,
     /// How many `char`s are in the longest row
-    pub longest_row_chars: u32,
+    pub longest_row_chars: Utf8<DeltaOffset>,
 }
 
 impl TextSummary {
     pub fn lines_utf16(&self) -> PointUtf16 {
         PointUtf16 {
-            row: self.lines.row,
+            row: self.lines.0.row,
             column: self.last_line_len_utf16,
         }
     }
@@ -1005,7 +1009,7 @@ impl TextSummary {
             first_line_chars: 0,
             last_line_chars: 0,
             last_line_len_utf16: 0,
-            lines: Point::new(1, 0),
+            lines: Delta(Point::new(1, 0)),
             longest_row: 0,
             longest_row_chars: 0,
         }
@@ -1016,7 +1020,7 @@ impl TextSummary {
         self.len_utf16 += OffsetUtf16(self.len_utf16.0 + 1);
         self.last_line_chars = 0;
         self.last_line_len_utf16 = 0;
-        self.lines += Point::new(1, 0);
+        self.lines += Delta(Point::new(1, 0));
     }
 }
 

@@ -6,24 +6,24 @@ use std::{
 use text::Point;
 
 #[repr(transparent)]
-pub struct TypedOffset<T> {
+pub struct Offset<T> {
     pub value: usize,
     _marker: PhantomData<T>,
 }
 
 #[repr(transparent)]
-pub struct TypedPoint<T> {
+pub struct Point<T> {
     pub value: Point,
     _marker: PhantomData<T>,
 }
 
 #[repr(transparent)]
-pub struct TypedRow<T> {
+pub struct Row<T> {
     pub value: u32,
     _marker: PhantomData<T>,
 }
 
-impl<T> TypedOffset<T> {
+impl<T> Offset<T> {
     pub fn new(offset: usize) -> Self {
         Self {
             value: offset,
@@ -31,7 +31,7 @@ impl<T> TypedOffset<T> {
         }
     }
 
-    pub fn saturating_sub(self, n: TypedOffset<T>) -> Self {
+    pub fn saturating_sub(self, n: Offset<T>) -> Self {
         Self {
             value: self.value.saturating_sub(n.value),
             _marker: PhantomData,
@@ -47,7 +47,7 @@ impl<T> TypedOffset<T> {
     }
 }
 
-impl<T> TypedPoint<T> {
+impl<T> Point<T> {
     pub fn new(row: u32, column: u32) -> Self {
         Self {
             value: Point::new(row, column),
@@ -79,7 +79,7 @@ impl<T> TypedPoint<T> {
     }
 }
 
-impl<T> TypedRow<T> {
+impl<T> Row<T> {
     pub fn new(row: u32) -> Self {
         Self {
             value: row,
@@ -88,100 +88,100 @@ impl<T> TypedRow<T> {
     }
 }
 
-impl<T> Copy for TypedOffset<T> {}
-impl<T> Copy for TypedPoint<T> {}
-impl<T> Copy for TypedRow<T> {}
+impl<T> Copy for Offset<T> {}
+impl<T> Copy for Point<T> {}
+impl<T> Copy for Row<T> {}
 
-impl<T> Clone for TypedOffset<T> {
+impl<T> Clone for Offset<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<T> Clone for TypedPoint<T> {
+impl<T> Clone for Point<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<T> Clone for TypedRow<T> {
+impl<T> Clone for Row<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Default for TypedOffset<T> {
+impl<T> Default for Offset<T> {
     fn default() -> Self {
         Self::new(0)
     }
 }
-impl<T> Default for TypedPoint<T> {
+impl<T> Default for Point<T> {
     fn default() -> Self {
         Self::wrap(Point::default())
     }
 }
-impl<T> Default for TypedRow<T> {
+impl<T> Default for Row<T> {
     fn default() -> Self {
         Self::new(0)
     }
 }
 
-impl<T> PartialOrd for TypedOffset<T> {
+impl<T> PartialOrd for Offset<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.value.cmp(&other.value))
     }
 }
-impl<T> PartialOrd for TypedPoint<T> {
+impl<T> PartialOrd for Point<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.value.cmp(&other.value))
     }
 }
-impl<T> PartialOrd for TypedRow<T> {
+impl<T> PartialOrd for Row<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.value.cmp(&other.value))
     }
 }
 
-impl<T> Ord for TypedOffset<T> {
+impl<T> Ord for Offset<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.value.cmp(&other.value)
     }
 }
-impl<T> Ord for TypedPoint<T> {
+impl<T> Ord for Point<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.value.cmp(&other.value)
     }
 }
-impl<T> Ord for TypedRow<T> {
+impl<T> Ord for Row<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.value.cmp(&other.value)
     }
 }
 
-impl<T> PartialEq for TypedOffset<T> {
+impl<T> PartialEq for Offset<T> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
-impl<T> PartialEq for TypedPoint<T> {
+impl<T> PartialEq for Point<T> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
-impl<T> PartialEq for TypedRow<T> {
+impl<T> PartialEq for Row<T> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
 
-impl<T> Eq for TypedOffset<T> {}
-impl<T> Eq for TypedPoint<T> {}
-impl<T> Eq for TypedRow<T> {}
+impl<T> Eq for Offset<T> {}
+impl<T> Eq for Point<T> {}
+impl<T> Eq for Row<T> {}
 
-impl<T> Debug for TypedOffset<T> {
+impl<T> Debug for Offset<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}Offset({})", type_name::<T>(), self.value)
     }
 }
-impl<T> Debug for TypedPoint<T> {
+impl<T> Debug for Point<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -192,18 +192,18 @@ impl<T> Debug for TypedPoint<T> {
         )
     }
 }
-impl<T> Debug for TypedRow<T> {
+impl<T> Debug for Row<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}Row({})", type_name::<T>(), self.value)
     }
 }
 
-impl<T> Display for TypedOffset<T> {
+impl<T> Display for Offset<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.value, f)
     }
 }
-impl<T> Display for TypedRow<T> {
+impl<T> Display for Row<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.value, f)
     }
@@ -213,51 +213,51 @@ fn type_name<T>() -> &'static str {
     std::any::type_name::<T>().split("::").last().unwrap()
 }
 
-impl<T> Add<TypedOffset<T>> for TypedOffset<T> {
+impl<T> Add<Offset<T>> for Offset<T> {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        TypedOffset::new(self.value + other.value)
+        Offset::new(self.value + other.value)
     }
 }
-impl<T> Add<TypedPoint<T>> for TypedPoint<T> {
+impl<T> Add<Point<T>> for Point<T> {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        TypedPoint::wrap(self.value + other.value)
+        Point::wrap(self.value + other.value)
     }
 }
 
-impl<T> Sub<TypedOffset<T>> for TypedOffset<T> {
+impl<T> Sub<Offset<T>> for Offset<T> {
     type Output = Self;
     fn sub(self, other: Self) -> Self {
-        TypedOffset::new(self.value - other.value)
+        Offset::new(self.value - other.value)
     }
 }
-impl<T> Sub<TypedPoint<T>> for TypedPoint<T> {
+impl<T> Sub<Point<T>> for Point<T> {
     type Output = Self;
     fn sub(self, other: Self) -> Self {
-        TypedPoint::wrap(self.value - other.value)
+        Point::wrap(self.value - other.value)
     }
 }
 
-impl<T> AddAssign<TypedOffset<T>> for TypedOffset<T> {
+impl<T> AddAssign<Offset<T>> for Offset<T> {
     fn add_assign(&mut self, other: Self) {
         self.value += other.value;
     }
 }
-impl<T> AddAssign<TypedPoint<T>> for TypedPoint<T> {
+impl<T> AddAssign<Point<T>> for Point<T> {
     fn add_assign(&mut self, other: Self) {
         self.value += other.value;
     }
 }
 
-impl<T> SubAssign<Self> for TypedOffset<T> {
+impl<T> SubAssign<Self> for Offset<T> {
     fn sub_assign(&mut self, other: Self) {
         self.value -= other.value;
     }
 }
-impl<T> SubAssign<Self> for TypedRow<T> {
+impl<T> SubAssign<Self> for Row<T> {
     fn sub_assign(&mut self, other: Self) {
         self.value -= other.value;
     }

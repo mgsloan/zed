@@ -1,12 +1,17 @@
-use crate::{OffsetUtf16, Point, PointUtf16, TextSummary, Unclipped};
+use crate::{
+    DeltaPoint, Offset, OffsetRangeExt, OffsetUtf16, Point, PointUtf16, TextSummary, Unclipped,
+    Utf16,
+};
 use arrayvec::ArrayString;
-use std::{cmp, ops::Range};
+use std::{cmp, marker::PhantomData, ops::Range};
 use sum_tree::Bias;
 use unicode_segmentation::GraphemeCursor;
 use util::debug_panic;
 
-pub(crate) const MIN_BASE: usize = if cfg!(test) { 6 } else { 64 };
-pub(crate) const MAX_BASE: usize = MIN_BASE * 2;
+pub(crate) const MIN_BASE_BYTES: usize = if cfg!(test) { 6 } else { 64 };
+pub(crate) const MAX_BASE_BYTES: usize = MIN_BASE_BYTES * 2;
+pub(crate) const MIN_BASE: Offset<Chunk> = Offset::new(MIN_BASE_BYTES);
+pub(crate) const MAX_BASE: Offset<Chunk> = Offset::new(MAX_BASE_BYTES);
 
 #[derive(Clone, Debug, Default)]
 pub struct Chunk {
@@ -14,7 +19,7 @@ pub struct Chunk {
     chars_utf16: u128,
     newlines: u128,
     tabs: u128,
-    pub text: ArrayString<MAX_BASE>,
+    pub text: ArrayString<MAX_BASE_BYTES>,
 }
 
 impl Chunk {
@@ -63,9 +68,15 @@ impl Chunk {
         }
     }
 
+    // todo! use both Offset<Chunk> and Offset<ChunkSlice>?!
+
     #[inline(always)]
-    pub fn slice(&self, range: Range<usize>) -> ChunkSlice {
+    pub fn slice(&self, range: Range<Offset<Chunk>>) -> ChunkSlice {
         self.as_slice().slice(range)
+    }
+
+    pub fn len(&self) -> Offset<Chunk> {
+        self.text.len().into()
     }
 }
 
@@ -97,12 +108,12 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn is_char_boundary(self, offset: usize) -> bool {
-        self.text.is_char_boundary(offset)
+    pub fn is_char_boundary(self, offset: Offset<Chunk>) -> bool {
+        self.text.is_char_boundary(offset.position)
     }
 
     #[inline(always)]
-    pub fn split_at(self, mid: usize) -> (ChunkSlice<'a>, ChunkSlice<'a>) {
+    pub fn split_at(self, mid: Offset<Chunk>) -> (ChunkSlice<'a>, ChunkSlice<'a>) {
         if mid == MAX_BASE {
             let left = self;
             let right = ChunkSlice {
@@ -114,8 +125,8 @@ impl<'a> ChunkSlice<'a> {
             };
             (left, right)
         } else {
-            let mask = (1u128 << mid) - 1;
-            let (left_text, right_text) = self.text.split_at(mid);
+            let mask = (1u128 << mid.position) - 1;
+            let (left_text, right_text) = self.text.split_at(mid.position);
             let left = ChunkSlice {
                 chars: self.chars & mask,
                 chars_utf16: self.chars_utf16 & mask,
@@ -124,10 +135,10 @@ impl<'a> ChunkSlice<'a> {
                 text: left_text,
             };
             let right = ChunkSlice {
-                chars: self.chars >> mid,
-                chars_utf16: self.chars_utf16 >> mid,
-                newlines: self.newlines >> mid,
-                tabs: self.tabs >> mid,
+                chars: self.chars >> mid.position,
+                chars_utf16: self.chars_utf16 >> mid.position,
+                newlines: self.newlines >> mid.position,
+                tabs: self.tabs >> mid.position,
                 text: right_text,
             };
             (left, right)
@@ -135,11 +146,11 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn slice(self, range: Range<usize>) -> Self {
+    pub fn slice(self, range: Range<Offset<Chunk>>) -> Self {
         let mask = if range.end == MAX_BASE {
             u128::MAX
         } else {
-            (1u128 << range.end) - 1
+            (1u128 << range.end.position) - 1
         };
         if range.start == MAX_BASE {
             Self {
@@ -151,11 +162,11 @@ impl<'a> ChunkSlice<'a> {
             }
         } else {
             Self {
-                chars: (self.chars & mask) >> range.start,
-                chars_utf16: (self.chars_utf16 & mask) >> range.start,
-                newlines: (self.newlines & mask) >> range.start,
-                tabs: (self.tabs & mask) >> range.start,
-                text: &self.text[range],
+                chars: (self.chars & mask) >> range.start.position,
+                chars_utf16: (self.chars_utf16 & mask) >> range.start.position,
+                newlines: (self.newlines & mask) >> range.start.position,
+                tabs: (self.tabs & mask) >> range.start.position,
+                text: &self.text[range.to_usize()],
             }
         }
     }
@@ -179,8 +190,8 @@ impl<'a> ChunkSlice<'a> {
 
     /// Get length in bytes
     #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.text.len()
+    pub fn len(&self) -> Offset<Chunk> {
+        self.text.len().into()
     }
 
     /// Get length in UTF-16 code units
@@ -191,10 +202,10 @@ impl<'a> ChunkSlice<'a> {
 
     /// Get point representing number of lines and length of last line
     #[inline(always)]
-    pub fn lines(&self) -> Point {
+    pub fn lines(&self) -> DeltaPoint {
         let row = self.newlines.count_ones();
         let column = self.newlines.leading_zeros() - (u128::BITS - self.text.len() as u32);
-        Point::new(row, column)
+        DeltaPoint::new(row, column)
     }
 
     /// Get number of chars in first line
@@ -267,7 +278,7 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn offset_to_point(&self, offset: usize) -> Point {
+    pub fn offset_to_point(&self, offset: usize) -> DeltaPoint {
         let mask = if offset == MAX_BASE {
             u128::MAX
         } else {
@@ -276,41 +287,41 @@ impl<'a> ChunkSlice<'a> {
         let row = (self.newlines & mask).count_ones();
         let newline_ix = u128::BITS - (self.newlines & mask).leading_zeros();
         let column = (offset - newline_ix as usize) as u32;
-        Point::new(row, column)
+        DeltaPoint::new(row, column)
     }
 
     #[inline(always)]
-    pub fn point_to_offset(&self, point: Point) -> usize {
+    pub fn point_to_offset(&self, point: DeltaPoint) -> DeltaOffset {
         if point.row > self.lines().row {
             debug_panic!(
                 "point {:?} extends beyond rows for string {:?}",
                 point,
                 self.text
             );
-            return self.len();
+            return self.len().into();
         }
 
         let row_offset_range = self.offset_range_for_row(point.row);
-        if point.column > row_offset_range.len() as u32 {
+        if point.column.count > row_offset_range.len() as u32 {
             debug_panic!(
                 "point {:?} extends beyond row for string {:?}",
                 point,
                 self.text
             );
-            row_offset_range.end
+            row_offset_range.end.into()
         } else {
-            row_offset_range.start + point.column as usize
+            (row_offset_range.start + point.column.count as usize).into()
         }
     }
 
     #[inline(always)]
-    pub fn offset_to_offset_utf16(&self, offset: usize) -> OffsetUtf16 {
+    pub fn offset_to_offset_utf16(&self, offset: usize) -> Utf16<DeltaOffset> {
         let mask = if offset == MAX_BASE {
             u128::MAX
         } else {
             (1u128 << offset) - 1
         };
-        OffsetUtf16((self.chars_utf16 & mask).count_ones() as usize)
+        ((self.chars_utf16 & mask).count_ones() as usize).into()
     }
 
     #[inline(always)]
@@ -349,14 +360,14 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn point_to_point_utf16(&self, point: Point) -> PointUtf16 {
+    pub fn point_to_point_utf16(&self, point: DeltaPoint) -> PointUtf16 {
         self.offset_to_point_utf16(self.point_to_offset(point))
     }
 
     #[inline(always)]
     pub fn point_utf16_to_offset(&self, point: PointUtf16, clip: bool) -> usize {
         let lines = self.lines();
-        if point.row > lines.row {
+        if point.row > lines.row.count {
             if !clip {
                 debug_panic!(
                     "point {:?} is beyond this chunk's extent {:?}",
@@ -401,9 +412,9 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn unclipped_point_utf16_to_point(&self, point: Unclipped<PointUtf16>) -> Point {
+    pub fn unclipped_point_utf16_to_point(&self, point: Unclipped<PointUtf16>) -> DeltaPoint {
         let max_point = self.lines();
-        if point.0.row > max_point.row {
+        if point.0.row > max_point.row.count {
             return max_point;
         }
 
@@ -423,7 +434,7 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn clip_point(&self, point: Point, bias: Bias) -> Point {
+    pub fn clip_point(&self, point: DeltaPoint, bias: Bias) -> DeltaPoint {
         let max_point = self.lines();
         if point.row > max_point.row {
             return max_point;
@@ -462,8 +473,8 @@ impl<'a> ChunkSlice<'a> {
     #[inline(always)]
     pub fn clip_point_utf16(&self, point: Unclipped<PointUtf16>, bias: Bias) -> PointUtf16 {
         let max_point = self.lines();
-        if point.0.row > max_point.row {
-            PointUtf16::new(max_point.row, self.last_line_len_utf16())
+        if point.0.row > max_point.row.count {
+            PointUtf16::new(max_point.row.count, self.last_line_len_utf16())
         } else {
             let line = self.slice(self.offset_range_for_row(point.0.row));
             let column = line.clip_offset_utf16(OffsetUtf16(point.0.column as usize), bias);
