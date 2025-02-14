@@ -1,6 +1,7 @@
 use crate::SharedString;
 use anyhow::{anyhow, Result};
 use smallvec::SmallVec;
+use smol::fs::canonicalize;
 use std::fmt;
 
 /// A datastructure for resolving whether an action should be dispatched
@@ -277,24 +278,56 @@ impl KeyBindingContextPredicate {
     /// Returns whether or not this predicate matches all possible contexts matched by
     /// the other predicate.
     pub fn is_superset(&self, other: &Self) -> bool {
+        let self_canonicalized = self.canonicalize_one_layer();
+        let self_canonicalized = self_canonicalized.as_ref().unwrap_or(&self);
+        let other_canonicalized = other.canonicalize_one_layer();
+        let other_canonicalized = other_canonicalized.as_ref().unwrap_or(&other);
+
+        self_canonicalized.is_superset_of_canonicalized(other_canonicalized)
+    }
+
+    fn is_superset_of_canonicalized(&self, other: &Self) -> bool {
         if self == other {
             return true;
         }
 
-        if let KeyBindingContextPredicate::Or(left, right) = self {
-            return left.is_superset(other) || right.is_superset(other);
+        match self {
+            Self::Or(left, right) => {
+                let left = left.canonicalize_one_layer();
+                let left = left.as_ref().unwrap_or(&left);
+                let right = right.canonicalize_one_layer();
+                let right = right.as_ref().unwrap_or(&right);
+                return left.is_superset_of_canonicalized(other)
+                    || right.is_superset_of_canonicalized(other);
+            }
+            _ => {}
         }
 
         match other {
-            KeyBindingContextPredicate::Child(_, child) => self.is_superset(child),
-            KeyBindingContextPredicate::And(left, right) => {
-                self.is_superset(left) || self.is_superset(right)
-            }
-            KeyBindingContextPredicate::Identifier(_) => false,
-            KeyBindingContextPredicate::Equal(_, _) => false,
-            KeyBindingContextPredicate::NotEqual(_, _) => false,
-            KeyBindingContextPredicate::Not(_) => false,
-            KeyBindingContextPredicate::Or(_, _) => false,
+            // TODO: Child case seems wrong
+            Self::Child(_, child) => self.is_superset(child),
+            Self::And(left, right) => self.is_superset(left) || self.is_superset(right),
+            Self::Or(left, right) => self.is_superset(left) && self.is_superset(right),
+            Self::Identifier(_) => false,
+            Self::Equal(_, _) => false,
+            Self::NotEqual(_, _) => false,
+            Self::Not(_) => false,
+        }
+    }
+
+    // todo! ugh probably need to represent And and Or as lists and sort them. Remove Display impl and canonicalize on parse instead?
+    fn canonicalize_one_layer(&self) -> Option<KeyBindingContextPredicate> {
+        use KeyBindingContextPredicate::*;
+        match predicate {
+            Identifier(_) | Equal(_, _) | Child(_, _) | And(_, _) | Or(_, _) => None,
+            NotEqual(left, right) => Some(Not(Box::new(Equal(left, right)))),
+            Not(negated_predicate) => match *negated_predicate {
+                Identifier(_) | Equal(_, _) | Child(_, _) => None,
+                NotEqual(left, right) => Some(Equal(left, right)),
+                And(left, right) => Some(Or(Box::new(Not(left)), Box::new(Not(right)))),
+                Or(left, right) => Some(And(Box::new(Not(left)), Box::new(Not(right)))),
+                Not(double_negated_pred) => Some(*double_negated_pred),
+            },
         }
     }
 
@@ -399,6 +432,10 @@ impl KeyBindingContextPredicate {
         } else {
             Err(anyhow!("operands of != must be identifiers"))
         }
+    }
+
+    fn new_not(self) -> Result<Self> {
+        Ok(Self::Not(Box::new(self)))
     }
 }
 
