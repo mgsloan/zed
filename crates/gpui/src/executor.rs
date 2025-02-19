@@ -467,6 +467,29 @@ impl ForegroundExecutor {
         }
         inner::<R>(dispatcher, Box::pin(future))
     }
+
+    /// Enqueues the given Task to run on the main thread at some point in the future. This is the
+    /// same as [`spawn`], but the future is required to be `Send`.
+    #[track_caller]
+    pub fn spawn_sendable<R>(&self, future: impl Future<Output = R> + Send + 'static) -> Task<R>
+    where
+        R: Send + 'static,
+    {
+        let dispatcher = self.dispatcher.clone();
+
+        #[track_caller]
+        fn inner<R: Send + 'static>(
+            dispatcher: Arc<dyn PlatformDispatcher>,
+            future: AnyFuture<R>,
+        ) -> Task<R> {
+            let (runnable, task) = async_task::spawn(future, move |runnable| {
+                dispatcher.dispatch_on_main_thread(runnable)
+            });
+            runnable.schedule();
+            Task(TaskState::Spawned(task))
+        }
+        inner::<R>(dispatcher, Box::pin(future))
+    }
 }
 
 /// Variant of `async_task::spawn_local` that includes the source location of the spawn in panics.

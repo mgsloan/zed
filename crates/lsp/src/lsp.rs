@@ -420,7 +420,7 @@ impl LanguageServer {
             Arc::new(Mutex::new(Some(HashMap::<_, ResponseHandler>::default())));
         let io_handlers = Arc::new(Mutex::new(HashMap::default()));
 
-        let stdout_input_task = cx.spawn({
+        let stdout_input_task = cx.spawn_sendable({
             let on_unhandled_notification = on_unhandled_notification.clone();
             let notification_handlers = notification_handlers.clone();
             let response_handlers = response_handlers.clone();
@@ -441,10 +441,12 @@ impl LanguageServer {
             .map(|stderr| {
                 let io_handlers = io_handlers.clone();
                 let stderr_captures = stderr_capture.clone();
-                cx.spawn(|_| Self::handle_stderr(stderr, io_handlers, stderr_captures).log_err())
+                cx.spawn_sendable(|_| {
+                    Self::handle_stderr(stderr, io_handlers, stderr_captures).log_err()
+                })
             })
             .unwrap_or_else(|| Task::ready(None));
-        let input_task = cx.spawn(|_| async move {
+        let input_task = cx.spawn_sendable(|_| async move {
             let (stdout, stderr) = futures::join!(stdout_input_task, stderr_input_task);
             stdout.or(stderr)
         });

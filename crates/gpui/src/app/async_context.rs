@@ -181,6 +181,16 @@ impl AsyncApp {
         self.foreground_executor.spawn(f(self.clone()))
     }
 
+    /// Schedule a future to be polled in the background.
+    #[track_caller]
+    pub fn spawn_sendable<Fut, R>(&self, f: impl FnOnce(AsyncApp) -> Fut) -> Task<R>
+    where
+        Fut: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        self.foreground_executor.spawn_sendable(f(self.clone()))
+    }
+
     /// Determine whether global state of the specified type has been assigned.
     /// Returns an error if the `App` has been dropped.
     pub fn has_global<G: Global>(&self) -> Result<bool> {
