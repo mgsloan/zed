@@ -505,6 +505,7 @@ where
 
     impl<F> Drop for Checked<F> {
         fn drop(&mut self) {
+            dbg!("dropped", thread::current().id());
             assert!(
                 self.id == thread_id(),
                 "local task dropped by a thread that didn't spawn it. Task spawned at {}",

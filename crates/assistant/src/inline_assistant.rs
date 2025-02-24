@@ -3684,7 +3684,10 @@ fn merge_ranges(ranges: &mut Vec<Range<Anchor>>, buffer: &MultiBufferSnapshot) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream::{self};
+    use futures::{
+        channel::oneshot::channel,
+        stream::{self},
+    };
     use gpui::TestAppContext;
     use indoc::indoc;
     use language::{
@@ -3700,6 +3703,41 @@ mod tests {
     #[derive(Serialize)]
     pub struct DummyCompletionRequest {
         pub name: String,
+    }
+
+    #[gpui::test]
+    async fn test_dropping_foreground_tasks(cx: &mut gpui::TestAppContext) {
+        use std::{sync::Arc, thread};
+
+        struct Wat {
+            task: Mutex<Task<()>>,
+        }
+
+        impl Drop for Wat {
+            fn drop(&mut self) {
+                dbg!("wat", thread::current().id());
+            }
+        }
+
+        dbg!("main", thread::current().id());
+        let (sender, receiver) = futures::channel::oneshot::channel::<()>();
+        let (sender2, receiver2) = futures::channel::oneshot::channel::<()>();
+        let task = cx.spawn(|cx| async move {
+            dbg!("hi!", thread::current().id());
+            receiver.await;
+            sender2.send(()).unwrap();
+        });
+        sender.send(()).unwrap();
+        receiver2.await;
+        let wat = Arc::new(Wat {
+            task: Mutex::new(task),
+        });
+        let handle = thread::spawn(move || {
+            dbg!("before", thread::current().id());
+            drop(wat);
+            dbg!("after", thread::current().id());
+        });
+        handle.join().unwrap();
     }
 
     #[gpui::test(iterations = 10)]
