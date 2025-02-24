@@ -2,14 +2,16 @@
 
 set -euo pipefail
 
+AGPL_CRATES=("collab")
+RELEASE_CRATES=("cli" "remote_server" "zed")
+
 check_license () {
     local dir="$1"
     local allowed_licenses=()
-    local agpl_crates=("crates/collab")
 
     local is_agpl=false
-    for agpl_crate in "${agpl_crates[@]}"; do
-        if [[ "$dir" == "$agpl_crate" ]]; then
+    for agpl_crate in "${AGPL_CRATES[@]}"; do
+        if [[ "$dir" == "crates/$agpl_crate" ]]; then
             is_agpl=true
             break
         fi
@@ -30,7 +32,7 @@ check_license () {
         fi
     done
 
-    if [[ "$dir" == "crates/collab" ]]; then
+    if [[ "$is_agpl" == true ]]; then
         echo "Error: $dir does not contain a LICENSE-AGPL symlink"
     else
         echo "Error: $dir does not contain a LICENSE-GPL or LICENSE-APACHE symlink"
@@ -41,3 +43,29 @@ check_license () {
 git ls-files "**/*/Cargo.toml" | while read -r cargo_toml; do
    check_license "$(dirname "$cargo_toml")"
 done
+
+
+# Make sure none of the AGPL server crates are included in the release tarball .
+# To ensure no AGPL code is involved this relies on
+# script/licenses/zed-licenses.toml excluding AGPL in dependencies.
+agpl_in_release_tarball=false
+for agpl_crate in "${AGPL_CRATES[@]}"; do
+    while IFS= read -r line; do
+        if [ ! -z "$line" ]; then
+            dependant=$(echo "$line" | awk '{print $1}')
+            for release_crate in "${RELEASE_CRATES[@]}"; do
+                if [[ "$dependant" == "$release_crate" ]]; then
+                    agpl_in_release_tarball=true
+                    break
+                fi
+            done
+        fi
+    done <<< $(cargo tree --prefix none --invert $agpl_crate)
+done
+
+if [[ $agpl_in_release_tarball == true ]]; then
+    echo "AGPL licensed code should not be used in the release distribution, only in servers." >&2
+    exit 1
+fi
+
+echo "check-licenses succeeded"

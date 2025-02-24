@@ -16747,6 +16747,7 @@ dependencies = [
  "clap",
  "cli",
  "client",
+ "collab",
  "collab_ui",
  "collections",
  "command_palette",
