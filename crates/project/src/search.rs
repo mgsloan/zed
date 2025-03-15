@@ -30,9 +30,18 @@ pub enum SearchInputKind {
     Exclude,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SearchScope {
+    All,
+    Usage,
+    Comment,
+    StringLiteral,
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchInputs {
     query: Arc<str>,
+    scope: SearchScope,
     files_to_include: PathMatcher,
     files_to_exclude: PathMatcher,
     buffers: Option<Vec<Entity<Buffer>>>,
@@ -41,6 +50,9 @@ pub struct SearchInputs {
 impl SearchInputs {
     pub fn as_str(&self) -> &str {
         self.query.as_ref()
+    }
+    pub fn scope(&self) -> SearchScope {
+        self.scope
     }
     pub fn files_to_include(&self) -> &PathMatcher {
         &self.files_to_include
@@ -52,6 +64,7 @@ impl SearchInputs {
         &self.buffers
     }
 }
+
 #[derive(Clone, Debug)]
 pub enum SearchQuery {
     Text {
@@ -86,6 +99,7 @@ impl SearchQuery {
         whole_word: bool,
         case_sensitive: bool,
         include_ignored: bool,
+        scpoe: SearchScope,
         files_to_include: PathMatcher,
         files_to_exclude: PathMatcher,
         buffers: Option<Vec<Entity<Buffer>>>,
@@ -98,6 +112,7 @@ impl SearchQuery {
             query: query.into(),
             files_to_exclude,
             files_to_include,
+            scope,
             buffers,
         };
         Ok(Self::Text {
@@ -115,6 +130,7 @@ impl SearchQuery {
         whole_word: bool,
         case_sensitive: bool,
         include_ignored: bool,
+        scope: SearchScope,
         files_to_include: PathMatcher,
         files_to_exclude: PathMatcher,
         buffers: Option<Vec<Entity<Buffer>>>,
@@ -143,6 +159,7 @@ impl SearchQuery {
             .build()?;
         let inner = SearchInputs {
             query: initial_query,
+            scope,
             files_to_exclude,
             files_to_include,
             buffers,
