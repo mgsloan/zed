@@ -29,6 +29,7 @@ pub fn init(cx: &mut App) {
 pub struct ThreadStore {
     project: Entity<Project>,
     tools: Arc<ToolWorkingSet>,
+    rules: Arc<RulesSet>,
     prompt_builder: Arc<PromptBuilder>,
     context_server_manager: Entity<ContextServerManager>,
     context_server_tool_ids: HashMap<Arc<str>, Vec<ToolId>>,

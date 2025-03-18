@@ -29,6 +29,19 @@ use crate::thread_store::{
 };
 use crate::tool_use::{PendingToolUse, ToolUse, ToolUseState};
 
+/*
+Key decisions:
+
+1. Rules get snapshotted on send of initial message, matching cursor behavior.
+
+**Question**: Do rules / system prompt get displayed in the UI?
+
+Implementation:
+
+* Add
+
+*/
+
 #[derive(Debug, Clone, Copy)]
 pub enum RequestKind {
     Chat,
