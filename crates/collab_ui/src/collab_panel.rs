@@ -373,6 +373,7 @@ impl CollabPanel {
         self.list_state.scroll_to_reveal_item(ix)
     }
 
+    // todo! blocking here seems wack
     fn update_entries(&mut self, select_same_item: bool, cx: &mut Context<Self>) {
         let channel_store = self.channel_store.read(cx);
         let user_store = self.user_store.read(cx);
