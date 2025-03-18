@@ -69,6 +69,8 @@ impl<'a, T: 'static> Context<'a, T> {
 
     /// Registers an async callback to be invoked when the given entity calls [`Context::notify`].
     /// If there are `notify` calls while the async callback is running, it is run again.
+    ///
+    /// todo! Handle the case where multiple observes have the same handler.
     pub fn observe_async<W, Fut>(
         &mut self,
         entity: &Entity<W>,

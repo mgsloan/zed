@@ -16,6 +16,7 @@ use project::Project;
 use room::Event;
 use settings::Settings;
 use std::sync::Arc;
+use util::ResultExt;
 
 pub use participant::ParticipantLocation;
 pub use room::Room;
@@ -437,12 +438,18 @@ impl ActiveCall {
                     Task::ready(Ok(()))
                 } else {
                     let subscriptions = vec![
-                        cx.observe(&room, |this, room, cx| {
-                            if room.read(cx).status().is_offline() {
-                                this.set_room(None, cx).detach_and_log_err(cx);
-                            }
-
+                        cx.observe_async(&room, |this, room, cx| {
                             cx.notify();
+                            let set_room_task = if room.read(cx).status().is_offline() {
+                                Some(this.set_room(None, cx))
+                            } else {
+                                None
+                            };
+                            async move {
+                                if let Some(set_room_task) = set_room_task {
+                                    set_room_task.await.log_err();
+                                }
+                            }
                         }),
                         cx.subscribe(&room, |_, _, event, cx| cx.emit(event.clone())),
                     ];
