@@ -11,6 +11,7 @@ mod history_store;
 mod inline_assistant;
 mod inline_prompt_editor;
 mod message_editor;
+mod rules_set;
 mod terminal_codegen;
 mod terminal_inline_assistant;
 mod thread;
