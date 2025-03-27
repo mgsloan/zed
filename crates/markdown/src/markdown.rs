@@ -18,6 +18,7 @@ use gpui::{
 use language::{Language, LanguageRegistry, Rope};
 use parser::{parse_links_only, parse_markdown, MarkdownEvent, MarkdownTag, MarkdownTagEnd};
 use pulldown_cmark::Alignment;
+use regex::Regex;
 use theme::SyntaxTheme;
 use ui::{prelude::*, Tooltip};
 use util::{ResultExt, TryFutureExt};
@@ -71,6 +72,7 @@ pub struct Markdown {
     focus_handle: FocusHandle,
     language_registry: Option<Arc<LanguageRegistry>>,
     fallback_code_block_language: Option<String>,
+    autolink_regex: Option<Arc<Regex>>,
     open_url: Option<Box<dyn Fn(SharedString, &mut Window, &mut App)>>,
     options: Options,
     copied_code_blocks: HashSet<ElementId>,
@@ -90,6 +92,7 @@ impl Markdown {
         style: MarkdownStyle,
         language_registry: Option<Arc<LanguageRegistry>>,
         fallback_code_block_language: Option<String>,
+        autolink_regex: Option<Arc<Regex>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -105,6 +108,7 @@ impl Markdown {
             focus_handle,
             language_registry,
             fallback_code_block_language,
+            autolink_regex,
             options: Options {
                 parse_links_only: false,
                 copy_code_block_buttons: true,
@@ -126,7 +130,12 @@ impl Markdown {
         }
     }
 
-    pub fn new_text(source: SharedString, style: MarkdownStyle, cx: &mut Context<Self>) -> Self {
+    pub fn new_text(
+        source: SharedString,
+        style: MarkdownStyle,
+        autolink_regex: Option<Arc<Regex>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let mut this = Self {
             source,
@@ -140,6 +149,7 @@ impl Markdown {
             focus_handle,
             language_registry: None,
             fallback_code_block_language: None,
+            autolink_regex,
             options: Options {
                 parse_links_only: true,
                 copy_code_block_buttons: true,
@@ -199,6 +209,7 @@ impl Markdown {
         let parse_text_only = self.options.parse_links_only;
         let language_registry = self.language_registry.clone();
         let fallback = self.fallback_code_block_language.clone();
+        let autolink_regex = self.autolink_regex.clone();
         let parsed = cx.background_spawn(async move {
             if parse_text_only {
                 return anyhow::Ok(ParsedMarkdown {
@@ -207,7 +218,7 @@ impl Markdown {
                     languages: HashMap::default(),
                 });
             }
-            let (events, language_names) = parse_markdown(&source);
+            let (events, language_names) = parse_markdown(&source, autolink_regex);
             let mut languages = HashMap::with_capacity(language_names.len());
             for name in language_names {
                 if let Some(registry) = language_registry.as_ref() {

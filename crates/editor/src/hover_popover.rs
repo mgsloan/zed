@@ -359,8 +359,14 @@ fn show_hover(
                             },
                             ..Default::default()
                         };
-                        Markdown::new_text(SharedString::new(text), markdown_style.clone(), cx)
-                            .open_url(open_markdown_url)
+                        let autolink_regex = None;
+                        Markdown::new_text(
+                            SharedString::new(text),
+                            markdown_style.clone(),
+                            autolink_regex,
+                            cx,
+                        )
+                        .open_url(open_markdown_url)
                     })
                     .ok();
 
@@ -562,6 +568,7 @@ async fn parse_blocks(
         })
         .join("\n\n");
 
+    let autolink_regex = None;
     let rendered_block = cx
         .new_window_entity(|window, cx| {
             Markdown::new(
@@ -569,6 +576,7 @@ async fn parse_blocks(
                 hover_markdown_style(window, cx),
                 Some(language_registry.clone()),
                 fallback_language_name,
+                autolink_regex,
                 cx,
             )
             .copy_code_block_buttons(false)

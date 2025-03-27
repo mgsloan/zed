@@ -205,7 +205,18 @@ fn render_markdown(
         ..Default::default()
     };
 
-    cx.new(|cx| Markdown::new(text, markdown_style, Some(language_registry), None, cx))
+    // todo!
+    let autolink_regex = None;
+    cx.new(|cx| {
+        Markdown::new(
+            text,
+            markdown_style,
+            Some(language_registry),
+            None,
+            autolink_regex,
+            cx,
+        )
+    })
 }
 
 struct EditMessageState {

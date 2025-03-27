@@ -61,7 +61,17 @@ fn zed_prompt_renderer(
                         selection_background_color: { cx.theme().players().local().selection },
                         ..Default::default()
                     };
-                    Markdown::new(SharedString::new(text), markdown_style, None, None, cx)
+                    let language_registry = None;
+                    let fallback_code_block_language = None;
+                    let autolink_regex = None;
+                    Markdown::new(
+                        SharedString::new(text),
+                        markdown_style,
+                        language_registry,
+                        fallback_code_block_language,
+                        autolink_regex,
+                        cx,
+                    )
                 })
             }),
         }

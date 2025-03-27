@@ -2,9 +2,13 @@ use gpui::SharedString;
 use linkify::LinkFinder;
 pub use pulldown_cmark::TagEnd as MarkdownTagEnd;
 use pulldown_cmark::{Alignment, HeadingLevel, LinkType, MetadataBlockKind, Options, Parser};
-use std::{collections::HashSet, ops::Range};
+use regex::Regex;
+use std::{collections::HashSet, iter, ops::Range, sync::Arc};
 
-pub fn parse_markdown(text: &str) -> (Vec<(Range<usize>, MarkdownEvent)>, HashSet<SharedString>) {
+pub fn parse_markdown(
+    text: &str,
+    autolink_regex: Option<Arc<Regex>>,
+) -> (Vec<(Range<usize>, MarkdownEvent)>, HashSet<SharedString>) {
     let mut options = Options::all();
     options.remove(pulldown_cmark::Options::ENABLE_DEFINITION_LIST);
     options.remove(pulldown_cmark::Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
@@ -83,12 +87,10 @@ pub fn parse_markdown(text: &str) -> (Vec<(Range<usize>, MarkdownEvent)>, HashSe
                     );
                     // Automatically detect links in text if not already within a markdown link.
                     if !within_link {
-                        let mut finder = LinkFinder::new();
-                        finder.kinds(&[linkify::LinkKind::Url]);
-                        let text_range = range.clone();
-                        for link in finder.links(&text[text_range.clone()]) {
+                        let text_start = range.start;
+                        for link_range in find_links(&text[range.clone()], &autolink_regex) {
                             let link_range =
-                                text_range.start + link.start()..text_range.start + link.end();
+                                text_start + link_range.start..text_start + link_range.end;
 
                             if link_range.start > range.start {
                                 events.push((range.start..link_range.start, MarkdownEvent::Text));
@@ -98,7 +100,9 @@ pub fn parse_markdown(text: &str) -> (Vec<(Range<usize>, MarkdownEvent)>, HashSe
                                 link_range.clone(),
                                 MarkdownEvent::Start(MarkdownTag::Link {
                                     link_type: LinkType::Autolink,
-                                    dest_url: SharedString::from(link.as_str().to_string()),
+                                    dest_url: SharedString::from(
+                                        text[link_range.clone()].to_string(),
+                                    ),
                                     title: SharedString::default(),
                                     id: SharedString::default(),
                                 }),
@@ -191,6 +195,32 @@ pub fn parse_links_only(text: &str) -> Vec<(Range<usize>, MarkdownEvent)> {
     }
 
     events
+}
+
+// todo! try to remove lifetimes
+fn find_links<'i, 'r: 'i>(
+    text: &'i str,
+    regex: &'r Option<Arc<Regex>>,
+) -> impl Iterator<Item = Range<usize>> + 'i {
+    let mut finder = LinkFinder::new();
+    finder.kinds(&[linkify::LinkKind::Url]);
+    if let Some(regex) = regex {
+        itertools::Either::Left(finder.spans(text).flat_map(|span| {
+            let range = span.start()..span.end();
+            if span.kind().is_none() {
+                let plaintext = &text[range];
+                itertools::Either::Left(
+                    regex
+                        .find_iter(plaintext)
+                        .map(move |mat| span.start() + mat.start()..span.start() + mat.end()),
+                )
+            } else {
+                itertools::Either::Right(iter::once(range))
+            }
+        }))
+    } else {
+        itertools::Either::Right(finder.links(text).map(|link| link.start()..link.end()))
+    }
 }
 
 /// A static-lifetime equivalent of pulldown_cmark::Event so we can cache the
@@ -421,7 +451,10 @@ mod tests {
     #[test]
     fn test_plain_urls_and_escaped_text() {
         assert_eq!(
-            parse_markdown("&nbsp;&nbsp; https://some.url some \\`&#9658;\\` text"),
+            parse_markdown(
+                "&nbsp;&nbsp; https://some.url some \\`&#9658;\\` text",
+                None
+            ),
             (
                 vec![
                     (0..51, Start(Paragraph)),
@@ -453,7 +486,7 @@ mod tests {
     #[test]
     fn test_smart_punctuation() {
         assert_eq!(
-            parse_markdown("-- --- ... \"double quoted\" 'single quoted'"),
+            parse_markdown("-- --- ... \"double quoted\" 'single quoted'", None),
             (
                 vec![
                     (0..42, Start(Paragraph)),

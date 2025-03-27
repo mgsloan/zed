@@ -155,6 +155,9 @@ impl CommitTooltip {
         if let Some(code_block) = &style.code_block.text {
             style.base_text_style.refine(code_block);
         }
+        let language_registry = None;
+        let fallback_code_block_language = None;
+        let autolink_regex = None;
         let markdown = cx.new(|cx| {
             Markdown::new(
                 commit
@@ -163,8 +166,9 @@ impl CommitTooltip {
                     .map(|message| message.message.clone())
                     .unwrap_or_default(),
                 style,
-                None,
-                None,
+                language_registry,
+                fallback_code_block_language,
+                autolink_regex,
                 cx,
             )
         });

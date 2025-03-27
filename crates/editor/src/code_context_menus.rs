@@ -622,11 +622,13 @@ impl CompletionsMenu {
                         let language = editor
                             .language_at(self.initial_position, cx)
                             .map(|l| l.name().to_proto());
+                        let autolink_regex = None;
                         Markdown::new(
                             SharedString::default(),
                             hover_markdown_style(window, cx),
                             languages,
                             language,
+                            autolink_regex,
                             cx,
                         )
                         .copy_code_block_buttons(false)

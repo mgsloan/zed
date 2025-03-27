@@ -117,6 +117,7 @@ impl MarkdownExample {
                 style,
                 Some(language_registry),
                 Some("TypeScript".to_string()),
+                None,
                 cx,
             )
         });

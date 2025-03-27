@@ -87,7 +87,14 @@ pub fn main() {
                     ..Default::default()
                 };
                 let markdown = cx.new(|cx| {
-                    Markdown::new(MARKDOWN_EXAMPLE.into(), markdown_style, None, None, cx)
+                    Markdown::new(
+                        MARKDOWN_EXAMPLE.into(),
+                        markdown_style,
+                        None,
+                        None,
+                        None,
+                        cx,
+                    )
                 });
 
                 HelloWorld { markdown }
