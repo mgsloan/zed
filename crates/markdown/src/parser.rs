@@ -94,12 +94,12 @@ pub fn parse_markdown(text: &str) -> (Vec<(Range<usize>, MarkdownEvent)>, HashSe
 
                             events.push((
                                 link_range.clone(),
-                                MarkdownEvent::Start(MarkdownTag::Link {
+                                MarkdownEvent::Start(MarkdownTag::Link(Box::new(Link {
                                     link_type: LinkType::Autolink,
                                     dest_url: SharedString::from(link.as_str().to_string()),
                                     title: SharedString::default(),
                                     id: SharedString::default(),
-                                }),
+                                }))),
                             ));
 
                             events.push((link_range.clone(), MarkdownEvent::Text));
@@ -171,12 +171,12 @@ pub fn parse_links_only(text: &str) -> Vec<(Range<usize>, MarkdownEvent)> {
 
         events.push((
             link_range.clone(),
-            MarkdownEvent::Start(MarkdownTag::Link {
+            MarkdownEvent::Start(MarkdownTag::Link(Box::new(Link {
                 link_type: LinkType::Autolink,
                 dest_url: SharedString::from(link.as_str().to_string()),
                 title: SharedString::default(),
                 id: SharedString::default(),
-            }),
+            }))),
         ));
         events.push((link_range.clone(), MarkdownEvent::Text));
         events.push((link_range.clone(), MarkdownEvent::End(MarkdownTagEnd::Link)));
@@ -235,13 +235,7 @@ pub enum MarkdownTag {
     /// The identifier is prefixed with `#` and the last one in the attributes
     /// list is chosen, classes are prefixed with `.` and custom attributes
     /// have no prefix and can optionally have a value (`myattr` o `myattr=myvalue`).
-    Heading {
-        level: HeadingLevel,
-        id: Option<SharedString>,
-        classes: Vec<SharedString>,
-        /// The first item of the tuple is the attr and second one the value.
-        attrs: Vec<(SharedString, Option<SharedString>)>,
-    },
+    Heading(Box<Heading>),
 
     BlockQuote,
 
@@ -279,23 +273,10 @@ pub enum MarkdownTag {
     Strikethrough,
 
     /// A link.
-    Link {
-        link_type: LinkType,
-        dest_url: SharedString,
-        title: SharedString,
-        /// Identifier of reference links, e.g. `world` in the link `[hello][world]`.
-        id: SharedString,
-    },
+    Link(Box<Link>),
 
-    /// An image. The first field is the link type, the second the destination URL and the third is a title,
-    /// the fourth is the link identifier.
-    Image {
-        link_type: LinkType,
-        dest_url: SharedString,
-        title: SharedString,
-        /// Identifier of reference links, e.g. `world` in the link `[hello][world]`.
-        id: SharedString,
-    },
+    /// An image.
+    Image(Box<Link>),
 
     /// A metadata block.
     MetadataBlock(MetadataBlockKind),
@@ -306,10 +287,28 @@ pub enum MarkdownTag {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Heading {
+    pub level: HeadingLevel,
+    pub id: Option<SharedString>,
+    pub classes: Vec<SharedString>,
+    /// The first item of the tuple is the attr and second one the value.
+    pub attrs: Vec<(SharedString, Option<SharedString>)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum CodeBlockKind {
     Indented,
     /// The value contained in the tag describes the language of the code, which may be empty.
     Fenced(SharedString),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    pub link_type: LinkType,
+    pub dest_url: SharedString,
+    pub title: SharedString,
+    /// Identifier of reference links, e.g. `world` in the link `[hello][world]`.
+    pub id: SharedString,
 }
 
 impl From<pulldown_cmark::Tag<'_>> for MarkdownTag {

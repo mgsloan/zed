@@ -16,7 +16,9 @@ use gpui::{
     TextRun, TextStyle, TextStyleRefinement,
 };
 use language::{Language, LanguageRegistry, Rope};
-use parser::{parse_links_only, parse_markdown, MarkdownEvent, MarkdownTag, MarkdownTagEnd};
+use parser::{
+    parse_links_only, parse_markdown, Heading, Link, MarkdownEvent, MarkdownTag, MarkdownTagEnd,
+};
 use pulldown_cmark::Alignment;
 use theme::SyntaxTheme;
 use ui::{prelude::*, Tooltip};
@@ -583,7 +585,8 @@ impl Element for MarkdownElement {
                                 markdown_end,
                             );
                         }
-                        MarkdownTag::Heading { level, .. } => {
+                        MarkdownTag::Heading(heading) => {
+                            let Heading { level, .. } = heading.as_ref();
                             let mut heading = div().mb_2();
                             heading = match level {
                                 pulldown_cmark::HeadingLevel::H1 => heading.text_3xl(),
@@ -680,7 +683,8 @@ impl Element for MarkdownElement {
                                 ..Default::default()
                             })
                         }
-                        MarkdownTag::Link { dest_url, .. } => {
+                        MarkdownTag::Link(link) => {
+                            let Link { dest_url, .. } = &link;
                             if builder.code_block_stack.is_empty() {
                                 builder.push_link(dest_url.clone(), range.clone());
                                 builder.push_text_style(self.style.link.clone())
