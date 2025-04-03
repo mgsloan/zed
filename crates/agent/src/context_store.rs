@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow};
+use assistant_tool::fenced_codeblock;
 use collections::{BTreeMap, HashMap, HashSet};
 use futures::future::join_all;
 use futures::{self, Future, FutureExt, future};
@@ -634,7 +635,7 @@ fn collect_buffer_info_and_text(
     };
 
     let full_path = file.full_path(cx);
-    let text_task = cx.background_spawn(async move { to_fenced_codeblock(&full_path, content) });
+    let text_task = cx.background_spawn(async move { fenced_codeblock(&full_path, content) });
 
     Ok((buffer_info, text_task))
 }
@@ -650,46 +651,6 @@ pub fn buffer_path_log_err(buffer: &Buffer, cx: &App) -> Option<Arc<Path>> {
         log::error!("Buffer that had a path unexpectedly no longer has a path.");
         None
     }
-}
-
-fn to_fenced_codeblock(path: &Path, content: Rope) -> SharedString {
-    let path_extension = path.extension().and_then(|ext| ext.to_str());
-    let path_string = path.to_string_lossy();
-    let capacity = 3
-        + path_extension.map_or(0, |extension| extension.len() + 1)
-        + path_string.len()
-        + 1
-        + content.len()
-        + 5;
-    let mut buffer = String::with_capacity(capacity);
-
-    buffer.push_str("```");
-
-    if let Some(extension) = path_extension {
-        buffer.push_str(extension);
-        buffer.push(' ');
-    }
-    buffer.push_str(&path_string);
-
-    buffer.push('\n');
-    for chunk in content.chunks() {
-        buffer.push_str(&chunk);
-    }
-
-    if !buffer.ends_with('\n') {
-        buffer.push('\n');
-    }
-
-    buffer.push_str("```\n");
-
-    debug_assert!(
-        buffer.len() == capacity - 1 || buffer.len() == capacity,
-        "to_fenced_codeblock calculated capacity of {}, but length was {}",
-        capacity,
-        buffer.len(),
-    );
-
-    buffer.into()
 }
 
 fn collect_files_in_path(worktree: &Worktree, path: &Path) -> Vec<Arc<Path>> {

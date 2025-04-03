@@ -1,4 +1,5 @@
 mod action_log;
+mod output;
 mod tool_registry;
 mod tool_working_set;
 
@@ -15,6 +16,7 @@ use language_model::LanguageModelToolSchemaFormat;
 use project::Project;
 
 pub use crate::action_log::*;
+pub use crate::output::*;
 pub use crate::tool_registry::*;
 pub use crate::tool_working_set::*;
 
