@@ -38,6 +38,7 @@ use thread::ThreadId;
 pub use crate::active_thread::ActiveThread;
 use crate::assistant_configuration::{AddContextServerModal, ManageProfilesModal};
 pub use crate::assistant_panel::{AssistantPanel, ConcreteAssistantPanelDelegate};
+pub use crate::context_store::ContextStore;
 pub use crate::inline_assistant::InlineAssistant;
 pub use crate::thread::{Message, RequestKind, Thread, ThreadEvent};
 pub use crate::thread_store::ThreadStore;

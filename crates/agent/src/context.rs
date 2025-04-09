@@ -177,8 +177,12 @@ pub fn format_context_as_string<'a>(
     }
 
     let mut result = String::new();
-    result.push_str("\n<context>\n\
-        The following items were attached by the user. You don't need to use other tools to read them.\n\n");
+    result.push_str("\n<context>\n");
+
+    result.push_str(
+        "The following items were attached by the user. \
+        You don't need to use other tools to read them.\n\n",
+    );
 
     if !file_context.is_empty() {
         result.push_str("<files>\n");
