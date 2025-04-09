@@ -21,7 +21,7 @@ use language_model::{
     PaymentRequiredError, Role, StopReason, TokenUsage,
 };
 use project::git_store::{GitStore, GitStoreCheckpoint, RepositoryState};
-use project::{Project, Worktree};
+use project::{Project, ProjectItem as _, Worktree};
 use prompt_store::{AssistantSystemPromptContext, PromptBuilder, WorktreeInfoForSystemPrompt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ use util::{ResultExt as _, TryFutureExt as _, post_inc};
 use uuid::Uuid;
 
 use crate::context::{AssistantContext, ContextId, format_context_as_string};
+use crate::context_store::ContextStore;
 use crate::thread_store::{
     SerializedMessage, SerializedMessageSegment, SerializedThread, SerializedToolResult,
     SerializedToolUse,
@@ -621,6 +622,8 @@ impl Thread {
         let message_id = self.insert_message(Role::User, vec![MessageSegment::Text(text)], cx);
 
         // Filter out contexts that have already been included in previous messages
+        //
+        // todo! callers are cloning the context - more efficient to filter before clone
         let new_context: Vec<_> = context
             .into_iter()
             .filter(|ctx| !self.context.contains_key(&ctx.id()))
@@ -1368,6 +1371,7 @@ impl Thread {
 
     pub fn use_pending_tools(
         &mut self,
+        context_store: &Entity<ContextStore>,
         cx: &mut Context<Self>,
     ) -> impl IntoIterator<Item = PendingToolUse> + use<> {
         let request = self.to_completion_request(RequestKind::Chat, cx);
@@ -1400,6 +1404,7 @@ impl Thread {
                         tool_use.input.clone(),
                         &messages,
                         tool,
+                        context_store.clone(),
                         cx,
                     );
                 }
@@ -1416,9 +1421,17 @@ impl Thread {
         input: serde_json::Value,
         messages: &[LanguageModelRequestMessage],
         tool: Arc<dyn Tool>,
+        context_store: Entity<ContextStore>,
         cx: &mut Context<Thread>,
     ) {
-        let task = self.spawn_tool_use(tool_use_id.clone(), messages, input, tool, cx);
+        let task = self.spawn_tool_use(
+            tool_use_id.clone(),
+            messages,
+            input,
+            tool,
+            context_store,
+            cx,
+        );
         self.tool_use
             .run_pending_tool(tool_use_id, ui_text.into(), task);
     }
@@ -1429,6 +1442,7 @@ impl Thread {
         messages: &[LanguageModelRequestMessage],
         input: serde_json::Value,
         tool: Arc<dyn Tool>,
+        context_store: Entity<ContextStore>,
         cx: &mut Context<Thread>,
     ) -> Task<()> {
         let tool_name: Arc<str> = tool.name().into();
@@ -1448,6 +1462,41 @@ impl Thread {
         cx.spawn({
             async move |thread: WeakEntity<Thread>, cx| {
                 let output = run_tool.await;
+
+                let Some(thread) = thread.upgrade() else {
+                    return;
+                };
+
+                let relevant_rules_task = context_store.update(cx, |context_store, cx| {
+                    // TODO: Inefficient to visit every tracked file, could instead only do
+                    // newly tracked. This would have the downside of not picking up added
+                    // rules files.
+                    let tracked_buffers = thread
+                        .read(cx)
+                        .action_log()
+                        .read(cx)
+                        .tracked_buffers()
+                        .filter_map(|buffer| buffer.read(cx).project_path(cx))
+                        .collect::<Vec<_>>();
+                    context_store.add_relevant_rules_files(tracked_buffers, cx)
+                });
+                match relevant_rules_task {
+                    Ok(relevant_rules_task) => {
+                        if let Some(err) =
+                            relevant_rules_task.await.into_iter().find_map(Result::err)
+                        {
+                            thread
+                                .update(cx, |_thread, cx| {
+                                    cx.emit(ThreadEvent::ShowError(ThreadError::Message {
+                                        header: "Error loading rules file".into(),
+                                        message: format!("{err}").into(),
+                                    }));
+                                })
+                                .ok();
+                        }
+                    }
+                    Err(_) => {}
+                };
 
                 thread
                     .update(cx, |thread, cx| {
@@ -1469,14 +1518,14 @@ impl Thread {
         })
     }
 
-    pub fn attach_tool_results(&mut self, cx: &mut Context<Self>) {
+    pub fn attach_tool_results(&mut self, context: Vec<AssistantContext>, cx: &mut Context<Self>) {
         // Insert a user message to contain the tool results.
         self.insert_user_message(
             // TODO: Sending up a user message without any content results in the model sending back
             // responses that also don't have any content. We currently don't handle this case well,
             // so for now we provide some text to keep the model on track.
             "Here are the tool results.",
-            Vec::new(),
+            context,
             None,
             cx,
         );

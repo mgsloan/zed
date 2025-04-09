@@ -829,9 +829,9 @@ impl ActiveThread {
                 cx.notify();
             }
             ThreadEvent::UsePendingTools => {
-                let tool_uses = self
-                    .thread
-                    .update(cx, |thread, cx| thread.use_pending_tools(cx));
+                let tool_uses = self.thread.update(cx, |thread, cx| {
+                    thread.use_pending_tools(&self.context_store, cx)
+                });
 
                 for tool_use in tool_uses {
                     self.render_tool_use_markdown(
@@ -867,7 +867,8 @@ impl ActiveThread {
                     let model_registry = LanguageModelRegistry::read_global(cx);
                     if let Some(ConfiguredModel { model, .. }) = model_registry.default_model() {
                         self.thread.update(cx, |thread, cx| {
-                            thread.attach_tool_results(cx);
+                            let context = self.context_store.read(cx).context().clone();
+                            thread.attach_tool_results(context, cx);
                             if !canceled {
                                 thread.send_to_model(model, RequestKind::Chat, cx);
                             }
@@ -2629,6 +2630,7 @@ impl ActiveThread {
                     c.input.clone(),
                     &c.messages,
                     c.tool.clone(),
+                    self.context_store.clone(),
                     cx,
                 );
             });

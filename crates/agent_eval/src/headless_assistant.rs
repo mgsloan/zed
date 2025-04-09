@@ -1,4 +1,4 @@
-use agent::{RequestKind, Thread, ThreadEvent, ThreadStore};
+use agent::{ContextStore, RequestKind, Thread, ThreadEvent, ThreadStore};
 use anyhow::anyhow;
 use assistant_tool::ToolWorkingSet;
 use client::{Client, UserStore};
@@ -31,6 +31,7 @@ pub struct HeadlessAppState {
 pub struct HeadlessAssistant {
     pub thread: Entity<Thread>,
     pub project: Entity<Project>,
+    pub context_store: Entity<ContextStore>,
     #[allow(dead_code)]
     pub thread_store: Entity<ThreadStore>,
     pub tool_use_counts: HashMap<Arc<str>, u32>,
@@ -58,6 +59,8 @@ impl HeadlessAssistant {
         let tools = Arc::new(ToolWorkingSet::default());
         let thread_store =
             ThreadStore::new(project.clone(), tools, app_state.prompt_builder.clone(), cx)?;
+        let context_store =
+            cx.new(|_cx| ContextStore::new(project.downgrade(), Some(thread_store.downgrade())));
 
         let thread = thread_store.update(cx, |thread_store, cx| thread_store.create_thread(cx));
 
@@ -67,6 +70,7 @@ impl HeadlessAssistant {
             _subscription: cx.subscribe(&thread, Self::handle_thread_event),
             thread,
             project,
+            context_store,
             thread_store,
             tool_use_counts: HashMap::default(),
             done_tx,
@@ -97,7 +101,7 @@ impl HeadlessAssistant {
             }
             ThreadEvent::UsePendingTools => {
                 thread.update(cx, |thread, cx| {
-                    thread.use_pending_tools(cx);
+                    thread.use_pending_tools(&self.context_store, cx);
                 });
             }
             ThreadEvent::ToolConfirmationNeeded => {
@@ -128,6 +132,7 @@ impl HeadlessAssistant {
                                 tool_use.input.clone(),
                                 &messages,
                                 tool,
+                                self.context_store.clone(),
                                 cx,
                             );
                         });
@@ -156,7 +161,8 @@ impl HeadlessAssistant {
                     let model_registry = LanguageModelRegistry::read_global(cx);
                     if let Some(model) = model_registry.default_model() {
                         thread.update(cx, |thread, cx| {
-                            thread.attach_tool_results(cx);
+                            let context = self.context_store.read(cx).context().clone();
+                            thread.attach_tool_results(context, cx);
                             thread.send_to_model(model.model, RequestKind::Chat, cx);
                         });
                     } else {

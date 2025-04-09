@@ -2,15 +2,18 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use agent_rules::{WhenUsed, rules_files_for_path};
 use anyhow::{Context as _, Result, anyhow};
 use collections::{BTreeMap, HashMap, HashSet};
 use futures::future::join_all;
 use futures::{self, Future, FutureExt, future};
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, WeakEntity};
+use itertools::Itertools;
 use language::{Buffer, File};
 use project::{ProjectItem, ProjectPath, Worktree};
 use rope::Rope;
 use text::{Anchor, BufferId, OffsetRangeExt};
+use util::markdown::MarkdownString;
 use util::{ResultExt as _, maybe};
 use workspace::Workspace;
 
@@ -356,6 +359,42 @@ impl ContextStore {
         }
     }
 
+    pub fn add_relevant_rules_files(
+        &mut self,
+        project_paths: Vec<ProjectPath>,
+        cx: &mut Context<Self>,
+    ) -> Task<Vec<Result<()>>> {
+        let rules_files = self.workspace.update(cx, |workspace, cx| {
+            workspace.project().update(cx, |project, cx| {
+                project_paths
+                    .into_iter()
+                    .flat_map(|project_path| {
+                        let Some(worktree) = project.worktree_for_id(project_path.worktree_id, cx)
+                        else {
+                            return vec![];
+                        };
+                        rules_files_for_path(worktree.read(cx), &project_path.path)
+                    })
+                    .sorted_by_key(|(path, _)| path.clone())
+                    .dedup_by(|(a, _), (b, _)| a == b)
+                    .collect::<Vec<_>>()
+            })
+        });
+        let Ok(rules_files) = rules_files else {
+            return Task::ready(vec![]);
+        };
+
+        let tasks = rules_files
+            .into_iter()
+            .map(|(project_path, _when_used)| {
+                // TODO inefficient for this to re-find the worktree and recompute `WhenUsed`.
+                self.add_file_from_path(project_path, false, cx)
+            })
+            .collect::<Vec<_>>();
+
+        cx.background_spawn(future::join_all(tasks))
+    }
+
     pub fn wait_for_summaries(&mut self, cx: &App) -> Task<()> {
         let tasks = std::mem::take(&mut self.thread_summary_tasks);
 
@@ -645,6 +684,7 @@ fn collect_buffer_info_and_text(
 
     // Important to collect version at the same time as content so that staleness logic is correct.
     let version = buffer_ref.version();
+    let has_range = range.is_some();
     let content = if let Some(range) = range {
         buffer_ref.text_for_range(range).collect::<Rope>()
     } else {
@@ -659,7 +699,14 @@ fn collect_buffer_info_and_text(
     };
 
     let full_path = file.full_path(cx);
-    let text_task = cx.background_spawn(async move { to_fenced_codeblock(&full_path, content) });
+    let rules_file_when_used = if has_range {
+        None
+    } else {
+        WhenUsed::for_path(file.path())
+    };
+    let text_task = cx.background_spawn(async move {
+        to_fenced_codeblock(rules_file_when_used, &full_path, content)
+    });
 
     Ok((buffer_info, text_task))
 }
@@ -677,16 +724,36 @@ pub fn buffer_path_log_err(buffer: &Buffer, cx: &App) -> Option<Arc<Path>> {
     }
 }
 
-fn to_fenced_codeblock(path: &Path, content: Rope) -> SharedString {
-    let path_extension = path.extension().and_then(|ext| ext.to_str());
-    let path_string = path.to_string_lossy();
-    let capacity = 3
+fn to_fenced_codeblock(
+    rules_file_when_used: Option<agent_rules::WhenUsed>,
+    full_path: &Path,
+    content: Rope,
+) -> SharedString {
+    let rules_message = match rules_file_when_used {
+        Some(agent_rules::WhenUsed::WithinDirectory(directory_path)) => Some(format!(
+            "Rules to follow for every file within {}:\n",
+            MarkdownString::inline_code(&directory_path.to_string_lossy())
+        )),
+        None => None,
+    };
+    let rules_message_len = rules_message
+        .as_ref()
+        .map_or(0, |rules_message| rules_message.len());
+
+    let path_extension = full_path.extension().and_then(|ext| ext.to_str());
+    let path_string = full_path.to_string_lossy();
+    let capacity = rules_message_len
+        + 3 // ```
         + path_extension.map_or(0, |extension| extension.len() + 1)
         + path_string.len()
-        + 1
+        + 1 // \n
         + content.len()
-        + 5;
+        + 5; // \n```\n
     let mut buffer = String::with_capacity(capacity);
+
+    if let Some(rules_message) = rules_message.as_ref() {
+        buffer.push_str(rules_message);
+    }
 
     buffer.push_str("```");
 

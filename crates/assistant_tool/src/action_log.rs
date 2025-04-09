@@ -453,6 +453,10 @@ impl ActionLog {
         cx.notify();
     }
 
+    pub fn tracked_buffers(&self) -> impl Iterator<Item = &Entity<Buffer>> {
+        self.tracked_buffers.keys()
+    }
+
     /// Returns the set of buffers that contain changes that haven't been reviewed by the user.
     pub fn changed_buffers(&self, cx: &App) -> BTreeMap<Entity<Buffer>, Entity<BufferDiff>> {
         self.tracked_buffers
