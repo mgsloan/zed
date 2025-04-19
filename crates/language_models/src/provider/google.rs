@@ -302,6 +302,10 @@ impl LanguageModel for GoogleLanguageModel {
         true
     }
 
+    fn faster_model_id(&self) -> Option<LanguageModelId> {
+        None
+    }
+
     fn tool_input_format(&self) -> LanguageModelToolSchemaFormat {
         LanguageModelToolSchemaFormat::JsonSchemaSubset
     }

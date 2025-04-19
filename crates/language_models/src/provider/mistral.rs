@@ -295,6 +295,10 @@ impl LanguageModel for MistralLanguageModel {
         false
     }
 
+    fn faster_model_id(&self) -> Option<LanguageModelId> {
+        None
+    }
+
     fn telemetry_id(&self) -> String {
         format!("mistral/{}", self.model.id())
     }

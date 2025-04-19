@@ -212,6 +212,23 @@ impl Model {
             _ => false,
         }
     }
+
+    pub fn faster_model(&self) -> Option<Self> {
+        match self {
+            Self::ThreePointFiveTurbo
+            | Self::Four
+            | Self::FourTurbo
+            | Self::FourOmni
+            | Self::FourOmniMini
+            | Self::FourPointOne
+            | Self::FourPointOneMini
+            | Self::FourPointOneNano => None,
+            Self::O1 | Self::O1Preview | Self::O1Mini | Self::O3Mini | Self::O3 | Self::O4Mini => {
+                todo!()
+            }
+            Self::Custom { .. } => todo!(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

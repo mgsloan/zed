@@ -283,6 +283,10 @@ impl LanguageModel for DeepSeekLanguageModel {
         false
     }
 
+    fn faster_model_id(&self) -> Option<LanguageModelId> {
+        None
+    }
+
     fn telemetry_id(&self) -> String {
         format!("deepseek/{}", self.model.id())
     }

@@ -278,6 +278,10 @@ impl LanguageModel for LmStudioLanguageModel {
         false
     }
 
+    fn faster_model_id(&self) -> Option<LanguageModelId> {
+        None
+    }
+
     fn telemetry_id(&self) -> String {
         format!("lmstudio/{}", self.model.id())
     }

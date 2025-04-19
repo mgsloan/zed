@@ -521,6 +521,12 @@ impl LanguageModel for BedrockModel {
         self.model.supports_tool_use()
     }
 
+    fn faster_model_id(&self) -> Option<LanguageModelId> {
+        self.model
+            .faster_model()
+            .map(|model| model.id().to_string().into())
+    }
+
     fn telemetry_id(&self) -> String {
         format!("bedrock/{}", self.model.id())
     }

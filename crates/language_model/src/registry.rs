@@ -18,6 +18,7 @@ impl Global for GlobalLanguageModelRegistry {}
 #[derive(Default)]
 pub struct LanguageModelRegistry {
     default_model: Option<ConfiguredModel>,
+    default_faster_model: Option<ConfiguredModel>,
     inline_assistant_model: Option<ConfiguredModel>,
     commit_message_model: Option<ConfiguredModel>,
     thread_summary_model: Option<ConfiguredModel>,
@@ -202,6 +203,19 @@ impl LanguageModelRegistry {
             (None, None) => {}
             _ => cx.emit(Event::DefaultModelChanged),
         }
+        self.default_faster_model = model.as_ref().and_then(|configured_model| {
+            let faster_model_id = configured_model.model.faster_model_id()?;
+            let faster_model_model = configured_model
+                .provider
+                .provided_models(cx)
+                .iter()
+                .find(|model| model.id() == faster_model_id)?
+                .clone();
+            Some(ConfiguredModel {
+                provider: configured_model.provider.clone(),
+                model: faster_model_model,
+            })
+        });
         self.default_model = model;
     }
 
@@ -253,6 +267,17 @@ impl LanguageModelRegistry {
         self.default_model.clone()
     }
 
+    pub fn default_faster_model_model(&self) -> Option<ConfiguredModel> {
+        #[cfg(debug_assertions)]
+        if std::env::var("ZED_SIMULATE_NO_LLM_PROVIDER").is_ok() {
+            return None;
+        }
+
+        self.default_faster_model
+            .clone()
+            .or_else(|| self.default_model.clone())
+    }
+
     pub fn inline_assistant_model(&self) -> Option<ConfiguredModel> {
         self.inline_assistant_model
             .clone()
@@ -262,13 +287,13 @@ impl LanguageModelRegistry {
     pub fn commit_message_model(&self) -> Option<ConfiguredModel> {
         self.commit_message_model
             .clone()
-            .or_else(|| self.default_model())
+            .or_else(|| self.default_faster_model_model())
     }
 
     pub fn thread_summary_model(&self) -> Option<ConfiguredModel> {
         self.thread_summary_model
             .clone()
-            .or_else(|| self.default_model())
+            .or_else(|| self.default_faster_model_model())
     }
 
     /// The models to use for inline assists. Returns the union of the active

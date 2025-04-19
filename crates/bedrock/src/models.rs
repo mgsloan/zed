@@ -271,6 +271,13 @@ impl Model {
         }
     }
 
+    pub fn faster_model(&self) -> Option<Self> {
+        match self {
+            Model::Claude3_7SonnetThinking => Some(Model::Claude3_7Sonnet),
+            _ => None,
+        }
+    }
+
     pub fn cross_region_inference_id(&self, region: &str) -> Result<String, anyhow::Error> {
         let region_group = if region.starts_with("us-gov-") {
             "us-gov"

@@ -123,6 +123,17 @@ impl Model {
             _ => None,
         }
     }
+
+    pub fn faster_model(&self) -> Option<Self> {
+        match self {
+            Self::CodestralLatest
+            | Self::MistralLargeLatest
+            | Self::MistralSmallLatest
+            | Self::OpenMistralNemo
+            | Self::OpenCodestralMamba
+            | Self::Custom { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

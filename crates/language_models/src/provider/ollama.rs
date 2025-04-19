@@ -289,6 +289,10 @@ impl LanguageModel for OllamaLanguageModel {
         false
     }
 
+    fn faster_model_id(&self) -> Option<LanguageModelId> {
+        None
+    }
+
     fn telemetry_id(&self) -> String {
         format!("ollama/{}", self.model.id())
     }

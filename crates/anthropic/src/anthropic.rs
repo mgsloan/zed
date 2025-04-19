@@ -211,6 +211,29 @@ impl Model {
         }
     }
 
+    pub fn faster_model(&self) -> Option<Self> {
+        match self {
+            Self::Claude3_5Sonnet
+            | Self::Claude3_7Sonnet
+            | Self::Claude3_5Haiku
+            | Self::Claude3Opus
+            | Self::Claude3Sonnet
+            | Self::Claude3Haiku => None,
+            Self::Claude3_7SonnetThinking => Some(Self::Claude3_7Sonnet),
+            Self::Custom { .. } => {
+                let mut result = self.clone();
+                match &mut result {
+                    Self::Custom { name, mode, .. } => {
+                        *name = name.replace("-thinking", "");
+                        *mode = AnthropicModelMode::Default;
+                    }
+                    _ => unreachable!(),
+                }
+                if result != *self { Some(result) } else { None }
+            }
+        }
+    }
+
     pub const DEFAULT_BETA_HEADERS: &[&str] = &["prompt-caching-2024-07-31"];
 
     pub fn beta_headers(&self) -> String {

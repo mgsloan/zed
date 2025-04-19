@@ -224,6 +224,9 @@ pub trait LanguageModel: Send + Sync {
         LanguageModelToolSchemaFormat::JsonSchema
     }
 
+    /// If there is a non-thinking variant of this model, returns its id.
+    fn faster_model_id(&self) -> Option<LanguageModelId>;
+
     fn max_token_count(&self) -> usize;
     fn max_output_tokens(&self) -> Option<u32> {
         None

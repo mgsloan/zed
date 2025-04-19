@@ -148,6 +148,22 @@ impl Model {
             Self::Gemini25Pro => 128_000,
         }
     }
+
+    pub fn faster_model(&self) -> Option<Self> {
+        match self {
+            Self::Gpt4o
+            | Self::Gpt4
+            | Self::Gpt4_1
+            | Self::Gpt3_5Turbo
+            | Self::Claude3_5Sonnet
+            | Self::Claude3_7Sonnet
+            | Self::Gemini20Flash => None,
+            Self::Claude3_7SonnetThinking => Some(Self::Claude3_7Sonnet),
+            // Arbitrarily c
+            Self::O3Mini | Self::O1 | Self::O3 | Self::O4Mini => Some(Self::Gpt4_1),
+            Self::Gemini25Pro => todo!(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

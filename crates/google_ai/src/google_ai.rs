@@ -455,6 +455,19 @@ impl Model {
             Model::Custom { max_tokens, .. } => *max_tokens,
         }
     }
+
+    pub fn faster_model(&self) -> Option<Self> {
+        match self {
+            Model::Gemini15Pro
+            | Model::Gemini15Flash
+            | Model::Gemini20Pro
+            | Model::Gemini20Flash
+            | Model::Gemini20FlashLite => None,
+            Model::Gemini20FlashThinking => Some(Model::Gemini20Flash),
+            Model::Gemini25ProExp0325 | Model::Gemini25ProPreview0325 => Some(Model::Gemini20Pro),
+            Model::Custom { .. } => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Model {

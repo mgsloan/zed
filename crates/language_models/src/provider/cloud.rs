@@ -647,6 +647,20 @@ impl LanguageModel for CloudLanguageModel {
         }
     }
 
+    fn faster_model_id(&self) -> Option<LanguageModelId> {
+        match &self.model {
+            CloudModel::Anthropic(model) => model
+                .faster_model()
+                .map(|model| model.id().to_string().into()),
+            CloudModel::Google(model) => model
+                .faster_model()
+                .map(|model| model.id().to_string().into()),
+            CloudModel::OpenAi(model) => model
+                .faster_model()
+                .map(|model| model.id().to_string().into()),
+        }
+    }
+
     fn telemetry_id(&self) -> String {
         format!("zed.dev/{}", self.model.id())
     }
