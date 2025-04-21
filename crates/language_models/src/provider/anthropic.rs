@@ -436,6 +436,20 @@ impl LanguageModel for AnthropicModel {
         Some(self.model.max_output_tokens())
     }
 
+    fn internal_request_json(
+        &self,
+        request: LanguageModelRequest,
+        _cx: &AsyncApp,
+    ) -> Result<serde_json::Value> {
+        Ok(into_anthropic(
+            request,
+            self.model.request_id().into(),
+            self.model.default_temperature(),
+            self.model.max_output_tokens(),
+            self.model.mode(),
+        ))
+    }
+
     fn count_tokens(
         &self,
         request: LanguageModelRequest,
@@ -449,13 +463,7 @@ impl LanguageModel for AnthropicModel {
         request: LanguageModelRequest,
         cx: &AsyncApp,
     ) -> BoxFuture<'static, Result<BoxStream<'static, Result<LanguageModelCompletionEvent>>>> {
-        let request = into_anthropic(
-            request,
-            self.model.request_id().into(),
-            self.model.default_temperature(),
-            self.model.max_output_tokens(),
-            self.model.mode(),
-        );
+        let request = self.internal_request_json(request, cx).unwrap();
         let request = self.stream_completion(request, cx);
         let future = self.request_limiter.stream(async move {
             let response = request

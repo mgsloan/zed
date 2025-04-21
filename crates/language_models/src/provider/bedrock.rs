@@ -1,3 +1,4 @@
+use std::future;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -538,11 +539,11 @@ impl LanguageModel for BedrockModel {
         get_bedrock_tokens(request, cx)
     }
 
-    fn stream_completion(
+    fn internal_request_json(
         &self,
         request: LanguageModelRequest,
         cx: &AsyncApp,
-    ) -> BoxFuture<'static, Result<BoxStream<'static, Result<LanguageModelCompletionEvent>>>> {
+    ) -> Result<serde_json::Value> {
         let Ok(region) = cx.read_entity(&self.state, |state, _cx| {
             // Get region - from credentials or directly from settings
             let region = state
@@ -553,25 +554,33 @@ impl LanguageModel for BedrockModel {
 
             region
         }) else {
-            return async move { Err(anyhow!("App State Dropped")) }.boxed();
+            return Err(anyhow!("App State Dropped"));
         };
 
         let model_id = match self.model.cross_region_inference_id(&region) {
-            Ok(s) => s,
-            Err(e) => {
-                return async move { Err(e) }.boxed();
+            Ok(model_id) => model_id,
+            Err(err) => {
+                return Err(err);
             }
         };
 
-        let request = match into_bedrock(
+        into_bedrock(
             request,
             model_id,
             self.model.default_temperature(),
             self.model.max_output_tokens(),
             self.model.mode(),
-        ) {
+        )
+    }
+
+    fn stream_completion(
+        &self,
+        request: LanguageModelRequest,
+        cx: &AsyncApp,
+    ) -> BoxFuture<'static, Result<BoxStream<'static, Result<LanguageModelCompletionEvent>>>> {
+        let request = match self.internal_request_json(request, cx) {
             Ok(request) => request,
-            Err(err) => return futures::future::ready(Err(err)).boxed(),
+            Err(err) => return future::ready(Err(err)).boxed(),
         };
 
         let owned_handle = self.handler.clone();

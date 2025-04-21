@@ -234,6 +234,14 @@ pub trait LanguageModel: Send + Sync {
         None
     }
 
+    /// Debugging utility for converting the request to the JSON request used by the model, if the
+    /// provider uses JSON requests.
+    fn internal_request_json(
+        &self,
+        request: LanguageModelRequest,
+        cx: &AsyncApp,
+    ) -> Result<serde_json::Value>;
+
     fn count_tokens(
         &self,
         request: LanguageModelRequest,
