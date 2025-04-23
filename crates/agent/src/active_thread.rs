@@ -1487,10 +1487,8 @@ impl ActiveThread {
         let checkpoint = thread.checkpoint_for_message(message_id);
         let added_context = if let Some(workspace) = workspace.upgrade() {
             let project = workspace.read(cx).project().read(cx);
-            thread
-                .context_for_message(message_id)
-                .flat_map(|context| AddedContext::new(context.clone(), project, cx))
-                .collect::<Vec<_>>()
+            // todo! skip re-collect
+            thread.context_for_message(message_id).collect::<Vec<_>>()
         } else {
             return Empty.into_any();
         };
@@ -1723,8 +1721,8 @@ impl ActiveThread {
                     parent.child(h_flex().flex_wrap().gap_1().children(
                         added_context.into_iter().map(|added_context| {
                             let context = added_context.context.clone();
-                            ContextPill::added(added_context, false, false, None).on_click(Rc::new(
-                                cx.listener({
+                            ContextPill::added(added_context.clone(), false, false, None).on_click(
+                                Rc::new(cx.listener({
                                     let workspace = workspace.clone();
                                     let context_store = context_store.clone();
                                     move |_, _, window, cx| {
@@ -1739,8 +1737,8 @@ impl ActiveThread {
                                             cx.notify();
                                         }
                                     }
-                                }),
-                            ))
+                                })),
+                            )
                         }),
                     ))
                 })

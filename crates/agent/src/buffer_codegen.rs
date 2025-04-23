@@ -420,7 +420,7 @@ impl CodegenAlternative {
             };
 
             if let Some(context_task) = context_task {
-                if let (Some(context), _context_buffers) = context_task.await {
+                if let (Some(context), _added_contexts, _context_buffers) = context_task.await {
                     request_message.content.push(context.into());
                 }
             }

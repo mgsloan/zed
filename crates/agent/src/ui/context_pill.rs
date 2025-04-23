@@ -1,9 +1,13 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::{rc::Rc, time::Duration};
 
 use file_icons::FileIcons;
 use futures::FutureExt;
-use gpui::{Animation, AnimationExt as _, ClickEvent, Image, MouseButton, Task, pulsating_between};
+use gpui::{
+    Animation, AnimationExt as _, ClickEvent, Empty, Image, MouseButton, Task, pulsating_between,
+};
+use language::File;
 use language_model::LanguageModelImage;
 use project::Project;
 use ui::{IconButtonShape, Tooltip, prelude::*, tooltip_container};
@@ -164,22 +168,26 @@ impl RenderOnce for ContextPill {
                                 element.tooltip(Tooltip::text(tooltip.clone()))
                             })
                             .map(|element| match &context.status {
-                                ContextStatus::Ready => element
-                                    .when_some(
-                                        context.render_preview.as_ref(),
-                                        |element, render_preview| {
-                                            element.hoverable_tooltip({
-                                                let render_preview = render_preview.clone();
-                                                move |_, cx| {
-                                                    cx.new(|_| ContextPillPreview {
-                                                        render_preview: render_preview.clone(),
-                                                    })
-                                                    .into()
-                                                }
-                                            })
-                                        },
-                                    )
-                                    .into_any(),
+                                ContextStatus::Ready =>
+                                /* todo!
+                                element.when_some(
+                                    context.render_preview.as_ref(),
+                                    |element, render_preview| {
+                                        element.hoverable_tooltip({
+                                            let render_preview = render_preview.clone();
+                                            move |_, cx| {
+                                                cx.new(|_| ContextPillPreview {
+                                                    render_preview: render_preview.clone(),
+                                                })
+                                                .into()
+                                            }
+                                        })
+                                    },
+                                )
+                                .into_any() */
+                                {
+                                    element.into_any_element()
+                                }
                                 ContextStatus::Loading { message } => element
                                     .tooltip(ui::Tooltip::text(message.clone()))
                                     .with_animation(
@@ -254,13 +262,14 @@ impl RenderOnce for ContextPill {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum ContextStatus {
     Ready,
     Loading { message: SharedString },
     Error { message: SharedString },
 }
 
-#[derive(RegisterComponent)]
+#[derive(Debug, Clone, RegisterComponent)]
 pub struct AddedContext {
     pub context: AssistantContext,
     pub kind: ContextKind,
@@ -269,35 +278,49 @@ pub struct AddedContext {
     pub tooltip: Option<SharedString>,
     pub icon_path: Option<SharedString>,
     pub status: ContextStatus,
-    pub render_preview: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>>,
+    // pub render_preview: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>>,
 }
 
 impl AddedContext {
     pub fn new(context: AssistantContext, project: &Project, cx: &App) -> Option<AddedContext> {
         match context {
             AssistantContext::File(ref file_context) => {
-                let full_path = file_context.buffer.read(cx).file()?.full_path(cx);
-                let full_path_string: SharedString =
-                    full_path.to_string_lossy().into_owned().into();
-                let name = full_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned().into())
-                    .unwrap_or_else(|| full_path_string.clone());
-                let parent = full_path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned().into());
-                Some(AddedContext {
-                    context: context.clone(),
-                    kind: ContextKind::File,
-                    name,
-                    parent,
-                    tooltip: Some(full_path_string),
-                    icon_path: FileIcons::get_icon(&full_path, cx),
-                    status: ContextStatus::Ready,
-                    render_preview: None,
-                })
+                let file = file_context.buffer.read(cx).file()?;
+                let full_path = file.full_path(cx);
+                Some(Self::for_file(context.clone(), full_path.as_path(), cx))
             }
+            AssistantContext::Directory(directory_context) => None,
+        }
+    }
+
+    pub fn for_file(context: AssistantContext, full_path: &Path, cx: &App) -> AddedContext {
+        let full_path_string: SharedString = full_path.to_string_lossy().into_owned().into();
+        let name = full_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned().into())
+            .unwrap_or_else(|| full_path_string.clone());
+        let parent = full_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned().into());
+        AddedContext {
+            context: context.clone(),
+            kind: ContextKind::File,
+            name,
+            parent,
+            tooltip: Some(full_path_string),
+            icon_path: FileIcons::get_icon(&full_path, cx),
+            status: ContextStatus::Ready,
+            // render_preview: None,
+        }
+    }
+}
+
+/*
+impl AddedContext {
+    pub fn new(context: AssistantContext, project: &Project, cx: &App) -> Option<AddedContext> {
+        match context {
+            AssistantContext::File(ref file_context) => {}
 
             AssistantContext::Directory(directory_context) => {
                 None
@@ -463,6 +486,7 @@ impl AddedContext {
         }
     }
 }
+*/
 
 struct ContextPillPreview {
     render_preview: Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>,

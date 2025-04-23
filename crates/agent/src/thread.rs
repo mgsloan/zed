@@ -40,6 +40,7 @@ use crate::thread_store::{
     SerializedToolUse, SharedProjectContext,
 };
 use crate::tool_use::{PendingToolUse, ToolUse, ToolUseMetadata, ToolUseState};
+use crate::ui::AddedContext;
 
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, JsonSchema,
@@ -97,7 +98,7 @@ pub struct Message {
     pub id: MessageId,
     pub role: Role,
     pub segments: Vec<MessageSegment>,
-    pub context: IndexSet<AssistantContext>,
+    pub context: Vec<AddedContext>,
     pub context_text: String,
     pub images: Vec<LanguageModelImage>,
 }
@@ -415,7 +416,7 @@ impl Thread {
                         .collect(),
                     context_text: message.context,
                     // TODO: Handle context serialization / deserialization
-                    context: IndexSet::default(),
+                    context: Vec::new(),
                     images: Vec::new(),
                 })
                 .collect(),
@@ -666,7 +667,7 @@ impl Thread {
         cx.notify();
     }
 
-    pub fn context_for_message(&self, id: MessageId) -> impl Iterator<Item = &AssistantContext> {
+    pub fn context_for_message(&self, id: MessageId) -> impl Iterator<Item = &AddedContext> {
         self.messages
             .iter()
             .find(|message| message.id == id)
@@ -712,7 +713,7 @@ impl Thread {
     pub fn remove_already_added_context<'a>(&self, context_set: &mut IndexSet<AssistantContext>) {
         for message in &self.messages {
             for context in &message.context {
-                context_set.swap_remove(context);
+                context_set.swap_remove(&context.context);
             }
         }
     }
@@ -720,7 +721,7 @@ impl Thread {
     pub fn insert_user_message(
         &mut self,
         text: String,
-        context: IndexSet<AssistantContext>,
+        context: Vec<AddedContext>,
         context_text: String,
         context_buffers: HashSet<Entity<Buffer>>,
         git_checkpoint: Option<GitStoreCheckpoint>,
@@ -772,7 +773,7 @@ impl Thread {
         &mut self,
         role: Role,
         segments: Vec<MessageSegment>,
-        context: IndexSet<AssistantContext>,
+        context: Vec<AddedContext>,
         context_text: String,
         cx: &mut Context<Self>,
     ) -> MessageId {
@@ -1201,8 +1202,8 @@ impl Thread {
                                 thread.insert_message(
                                     Role::Assistant,
                                     vec![MessageSegment::Text(String::new())],
-                                    IndexSet::default(),
-                                    "".to_string(),
+                                    vec![],
+                                    String::new(),
                                     cx,
                                 );
                             }
@@ -1234,8 +1235,8 @@ impl Thread {
                                         thread.insert_message(
                                             Role::Assistant,
                                             vec![MessageSegment::Text(chunk.to_string())],
-                                            IndexSet::default(),
-                                            "".to_string(),
+                                            vec![],
+                                            String::new(),
                                             cx,
                                         );
                                     };
@@ -1264,8 +1265,8 @@ impl Thread {
                                                 text: chunk.to_string(),
                                                 signature,
                                             }],
-                                            IndexSet::default(),
-                                            "".to_string(),
+                                            vec![],
+                                            String::new(),
                                             cx,
                                         );
                                     };
@@ -1281,8 +1282,8 @@ impl Thread {
                                         thread.insert_message(
                                             Role::Assistant,
                                             vec![],
-                                            IndexSet::default(),
-                                            "".to_string(),
+                                            vec![],
+                                            String::new(),
                                             cx,
                                         )
                                     });
@@ -1690,7 +1691,7 @@ impl Thread {
     pub fn attach_tool_results(&mut self, cx: &mut Context<Self>) {
         // Tool results are assumed to be waiting on the next message id, so they will populate
         // this empty message before sending to model. Would prefer this to be more straightforward.
-        self.insert_message(Role::User, vec![], IndexSet::default(), "".to_string(), cx);
+        self.insert_message(Role::User, vec![], vec![], String::new(), cx);
         self.auto_capture_telemetry(cx);
     }
 

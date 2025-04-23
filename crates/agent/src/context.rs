@@ -3,6 +3,7 @@ use std::{ops::Range, path::Path, sync::Arc};
 use anyhow::Context as _;
 use anyhow::Result;
 use collections::HashSet;
+use file_icons::FileIcons;
 use fs::Fs;
 use futures::future;
 use futures::{FutureExt, future::Shared};
@@ -18,9 +19,12 @@ use ui::{ElementId, IconName};
 use util::ResultExt as _;
 
 use crate::thread::Thread;
+use crate::ui::AddedContext;
+use crate::ui::ContextStatus;
 
 pub const RULES_ICON: IconName = IconName::Context;
 
+#[derive(Debug, Clone)]
 pub enum ContextKind {
     File,
     Directory,
@@ -110,20 +114,25 @@ impl FileContext {
         todo!()
     }
 
-    fn load(self, cx: &mut App) -> Option<Task<(String, Entity<Buffer>)>> {
+    fn load(self, cx: &mut App) -> Option<Task<(String, AddedContext, Entity<Buffer>)>> {
         let buffer_ref = self.buffer.read(cx);
         let Some(file) = buffer_ref.file() else {
             log::error!("file context missing path");
             return None;
         };
         let full_path = file.full_path(cx);
+
         let rope = buffer_ref.as_rope().clone();
         let buffer = self.buffer.clone();
-        Some(
-            cx.background_spawn(
-                async move { (to_fenced_codeblock(&full_path, rope, None), buffer) },
-            ),
-        )
+        let added_context =
+            AddedContext::for_file(AssistantContext::File(self), full_path.as_path(), cx);
+        Some(cx.background_spawn(async move {
+            (
+                to_fenced_codeblock(&full_path, rope, None),
+                added_context,
+                buffer,
+            )
+        }))
     }
 }
 
@@ -276,7 +285,7 @@ pub fn load_context<'a>(
     contexts: impl Iterator<Item = &'a AssistantContext>,
     project: Entity<Project>,
     cx: &mut App,
-) -> Task<(Option<String>, HashSet<Entity<Buffer>>)> {
+) -> Task<(Option<String>, Vec<AddedContext>, HashSet<Entity<Buffer>>)> {
     let mut file_context_tasks = Vec::new();
     let mut directory_context_tasks = Vec::new();
     /*
@@ -313,7 +322,7 @@ pub fn load_context<'a>(
     && rules_context.is_empty()
     */
     {
-        return Task::ready((None, HashSet::default()));
+        return Task::ready((None, Vec::new(), HashSet::default()));
     }
 
     cx.background_spawn(async move {
@@ -324,6 +333,8 @@ pub fn load_context<'a>(
 
         let directory_context = directory_context.into_iter().flat_map(|context| context).collect::<Vec<_>>();
 
+        // todo! preserve order
+        let mut added_contexts = Vec::new();
         let mut buffers = HashSet::default();
 
         let mut result = String::new();
@@ -332,8 +343,9 @@ pub fn load_context<'a>(
 
         if !file_context.is_empty() {
             result.push_str("<files>\n");
-            for (text, buffer) in file_context {
+            for (text, added_context, buffer) in file_context {
                 result.push_str(&text);
+                added_contexts.push(added_context);
                 buffers.insert(buffer);
             }
             result.push_str("</files>\n");
@@ -412,7 +424,7 @@ pub fn load_context<'a>(
         */
 
         result.push_str("</context>\n");
-        (Some(result), buffers)
+        (Some(result), added_contexts, buffers)
     })
 }
 

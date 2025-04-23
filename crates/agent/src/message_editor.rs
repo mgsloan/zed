@@ -284,14 +284,14 @@ impl MessageEditor {
         cx.spawn(async move |_this, cx| {
             // todo! wait in parallel
             let checkpoint = checkpoint.await.ok();
-            let (context_text, context_buffers) = context_text_task.await;
+            let (context_text, added_contexts, context_buffers) = context_text_task.await;
             // todo! wait_for_images.await;
 
             thread
                 .update(cx, |thread, cx| {
                     thread.insert_user_message(
                         user_message,
-                        new_context,
+                        added_contexts,
                         context_text.unwrap_or_else(|| "".to_string()),
                         context_buffers,
                         checkpoint,
