@@ -396,8 +396,10 @@ pub enum Model {
     Gemini20Flash,
     #[serde(rename = "gemini-2.0-flash-thinking-exp")]
     Gemini20FlashThinking,
-    #[serde(rename = "gemini-2.0-flash-lite-preview")]
+    #[serde(rename = "gemini-2.0-flash-lite")]
     Gemini20FlashLite,
+    #[serde(rename = "gemini-2.0-flash-lite-preview")]
+    Gemini20FlashLitePreview,
     #[serde(rename = "gemini-2.5-pro-exp-03-25")]
     Gemini25ProExp0325,
     #[serde(rename = "gemini-2.5-pro-preview-03-25")]
@@ -425,7 +427,8 @@ impl Model {
             Model::Gemini20Pro => "gemini-2.0-pro-exp",
             Model::Gemini20Flash => "gemini-2.0-flash",
             Model::Gemini20FlashThinking => "gemini-2.0-flash-thinking-exp",
-            Model::Gemini20FlashLite => "gemini-2.0-flash-lite-preview",
+            Model::Gemini20FlashLite => "gemini-2.0-flash-lite",
+            Model::Gemini20FlashLitePreview => "gemini-2.0-flash-lite-preview",
             Model::Gemini25ProExp0325 => "gemini-2.5-pro-exp-03-25",
             Model::Gemini25ProPreview0325 => "gemini-2.5-pro-preview-03-25",
             Model::Gemini25FlashPreview0417 => "gemini-2.5-flash-preview-04-17",
@@ -441,6 +444,7 @@ impl Model {
             Model::Gemini20Flash => "Gemini 2.0 Flash",
             Model::Gemini20FlashThinking => "Gemini 2.0 Flash Thinking",
             Model::Gemini20FlashLite => "Gemini 2.0 Flash Lite",
+            Model::Gemini20FlashLitePreview => "Gemini 2.0 Flash Lite",
             Model::Gemini25ProExp0325 => "Gemini 2.5 Pro Exp",
             Model::Gemini25ProPreview0325 => "Gemini 2.5 Pro Preview",
             Model::Gemini25FlashPreview0417 => "Gemini 2.5 Flash Preview",
@@ -458,10 +462,20 @@ impl Model {
             Model::Gemini20Flash => 1_000_000,
             Model::Gemini20FlashThinking => 1_000_000,
             Model::Gemini20FlashLite => 1_000_000,
+            Model::Gemini20FlashLitePreview => 1_000_000,
             Model::Gemini25ProExp0325 => 1_000_000,
             Model::Gemini25ProPreview0325 => 1_000_000,
             Model::Gemini25FlashPreview0417 => 1_000_000,
             Model::Custom { max_tokens, .. } => *max_tokens,
+        }
+    }
+
+    pub fn replacement_model(&self) -> Option<Model> {
+        match self {
+            Model::Gemini20FlashThinking => Some(Model::Gemini25FlashPreview0417),
+            Model::Gemini20Pro => Some(Model::Gemini25ProPreview0325),
+            Model::Gemini20FlashLitePreview => Some(Model::Gemini20FlashLite),
+            _ => None,
         }
     }
 }

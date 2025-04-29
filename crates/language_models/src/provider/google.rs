@@ -198,7 +198,9 @@ impl LanguageModelProvider for GoogleLanguageModelProvider {
         // Add base models from google_ai::Model::iter()
         for model in google_ai::Model::iter() {
             if !matches!(model, google_ai::Model::Custom { .. }) {
-                models.insert(model.id().to_string(), model);
+                if model.replacement_model().is_none() {
+                    models.insert(model.id().to_string(), model);
+                }
             }
         }
 

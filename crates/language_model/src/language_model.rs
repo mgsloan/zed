@@ -232,6 +232,10 @@ pub trait LanguageModel: Send + Sync {
     fn provider_name(&self) -> LanguageModelProviderName;
     fn telemetry_id(&self) -> String;
 
+    fn matches_id(&self, other_id: LanguageModelId) -> bool {
+        self.id() == other_id
+    }
+
     fn api_key(&self, _cx: &App) -> Option<String> {
         None
     }
