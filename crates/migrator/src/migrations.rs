@@ -57,3 +57,8 @@ pub(crate) mod m_2025_04_23 {
 
     pub(crate) use settings::SETTINGS_PATTERNS;
 }
+
+// This migration is not yet used.
+pub(crate) mod pending {
+    mod settings;
+}
