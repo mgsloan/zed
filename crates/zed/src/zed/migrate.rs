@@ -24,8 +24,6 @@ pub enum MigrationType {
 pub struct MigrationBanner {
     /// Populated when the pane's item could have a migration.
     migration_type: Option<MigrationType>,
-    should_migrate_keymap_task: Shared<Task<Option<(MTime, bool)>>>,
-    should_migrate_settings_task: Shared<Task<Option<(MTime, bool)>>>,
 }
 
 pub enum MigrationEvent {
@@ -35,28 +33,37 @@ pub enum MigrationEvent {
     },
 }
 
-pub struct MigrationNotification;
+pub struct MigrationState {
+    should_migrate_keymap_task: Shared<Task<Option<(MTime, bool)>>>,
+    should_migrate_settings_task: Shared<Task<Option<(MTime, bool)>>>,
+}
 
-impl EventEmitter<MigrationEvent> for MigrationNotification {}
+impl EventEmitter<MigrationEvent> for MigrationState {}
 
-impl MigrationNotification {
-    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalMigrationNotification>()
-            .map(|notifier| notifier.0.clone())
-    }
-
-    pub fn set_global(notifier: Entity<Self>, cx: &mut App) {
-        cx.set_global(GlobalMigrationNotification(notifier));
+impl MigrationState {
+    pub fn global(cx: &mut App) -> Entity<Self> {
+        match cx.try_global::<GlobalMigrationState>() {
+            None => {
+                let state = cx.new(|_| MigrationState {
+                    should_migrate_keymap_task: todo!(),
+                    should_migrate_settings_task: todo!(),
+                });
+                let global_state = GlobalMigrationState(state.clone());
+                cx.set_global(global_state);
+                state
+            }
+            Some(global_state) => global_state.0.clone(),
+        }
     }
 }
 
-struct GlobalMigrationNotification(Entity<MigrationNotification>);
+struct GlobalMigrationState(Entity<MigrationState>);
 
-impl Global for GlobalMigrationNotification {}
+impl Global for GlobalMigrationState {}
 
 impl MigrationBanner {
     pub fn new(_: &Workspace, cx: &mut Context<Self>) -> Self {
-        if let Some(notifier) = MigrationNotification::try_global(cx) {
+        if let Some(notifier) = MigrationState::try_global(cx) {
             cx.subscribe(
                 &notifier,
                 move |migrator_banner, _, event: &MigrationEvent, cx| {

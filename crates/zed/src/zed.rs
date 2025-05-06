@@ -30,7 +30,7 @@ use gpui::{
     image_cache, point, px, retain_all,
 };
 use image_viewer::ImageInfo;
-use migrate::{MigrationBanner, MigrationEvent, MigrationNotification, MigrationType};
+use migrate::{MigrationBanner, MigrationEvent, MigrationState, MigrationType};
 use migrator::{migrate_keymap, migrate_settings};
 pub use open_listener::*;
 use outline_panel::OutlinePanel;
@@ -1119,7 +1119,7 @@ pub fn handle_settings_file_changes(
     cx: &mut App,
     settings_changed: impl Fn(Option<anyhow::Error>, &mut App) + 'static,
 ) {
-    MigrationNotification::set_global(cx.new(|_| MigrationNotification), cx);
+    MigrationState::set_global(cx.new(|_| MigrationState), cx);
     let content = cx
         .background_executor()
         .block(user_settings_file_rx.next())
@@ -1150,7 +1150,7 @@ pub fn handle_settings_file_changes(
             }
 
             cx.update(|cx| {
-                if let Some(notifier) = MigrationNotification::try_global(cx) {
+                if let Some(notifier) = MigrationState::try_global(cx) {
                     notifier.update(cx, |_, cx| {
                         cx.emit(MigrationEvent::ContentChanged {
                             migration_type: MigrationType::Settings,
@@ -1234,7 +1234,7 @@ pub fn handle_keymap_file_changes(
                 }
             };
             cx.update(|cx| {
-                if let Some(notifier) = MigrationNotification::try_global(cx) {
+                if let Some(notifier) = MigrationState::try_global(cx) {
                     notifier.update(cx, |_, cx| {
                         cx.emit(MigrationEvent::ContentChanged {
                             migration_type: MigrationType::Keymap,
