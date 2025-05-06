@@ -1,6 +1,8 @@
 use anyhow::{Context as _, Result};
 use editor::Editor;
 use fs::Fs;
+use futures::FutureExt as _;
+use futures::future::Shared;
 use migrator::{migrate_keymap, migrate_settings};
 use settings::{KeymapFile, SettingsStore};
 use util::ResultExt;
@@ -19,6 +21,7 @@ pub enum MigrationType {
 }
 
 pub struct MigrationBanner {
+    /// Populated when the pane's item could have a migration.
     migration_type: Option<MigrationType>,
     should_migrate_task: Option<Task<()>>,
 }
@@ -30,36 +33,44 @@ pub enum MigrationEvent {
     },
 }
 
-pub struct MigrationNotification;
+pub struct MigrationState {
+    should_migrate_keymap_task: Shared<Task<bool>>,
+    should_migrate_settings_task: Shared<Task<bool>>,
+}
 
-impl EventEmitter<MigrationEvent> for MigrationNotification {}
+impl EventEmitter<MigrationEvent> for MigrationState {}
 
-impl MigrationNotification {
-    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalMigrationNotification>()
-            .map(|notifier| notifier.0.clone())
-    }
-
-    pub fn set_global(notifier: Entity<Self>, cx: &mut App) {
-        cx.set_global(GlobalMigrationNotification(notifier));
+impl MigrationState {
+    pub fn global(cx: &mut App) -> Entity<Self> {
+        match cx.try_global::<GlobalMigrationState>() {
+            None => {
+                let state = cx.new(|_| MigrationState {
+                    should_migrate_keymap_task: Task::ready(false).shared(),
+                    should_migrate_settings_task: Task::ready(false).shared(),
+                });
+                let global_state = GlobalMigrationState(state.clone());
+                cx.set_global(global_state);
+                state
+            }
+            Some(global_state) => global_state.0.clone(),
+        }
     }
 }
 
-struct GlobalMigrationNotification(Entity<MigrationNotification>);
+struct GlobalMigrationState(Entity<MigrationState>);
 
-impl Global for GlobalMigrationNotification {}
+impl Global for GlobalMigrationState {}
 
 impl MigrationBanner {
     pub fn new(_: &Workspace, cx: &mut Context<Self>) -> Self {
-        if let Some(notifier) = MigrationNotification::try_global(cx) {
-            cx.subscribe(
-                &notifier,
-                move |migrator_banner, _, event: &MigrationEvent, cx| {
-                    migrator_banner.handle_notification(event, cx);
-                },
-            )
-            .detach();
-        }
+        let migration_state = MigrationState::global(cx);
+        cx.subscribe(
+            &migration_state,
+            move |migrator_banner, _, event: &MigrationEvent, cx| {
+                migrator_banner.handle_notification(event, cx);
+            },
+        )
+        .detach();
         Self {
             migration_type: None,
             should_migrate_task: None,
@@ -88,6 +99,19 @@ impl MigrationBanner {
                 migration_type,
                 migrated,
             } => {
+                MigrationState::global(cx).update(
+                    cx,
+                    |migration_state, _cx| match migration_type {
+                        MigrationType::Keymap => {
+                            migration_state.should_migrate_keymap_task =
+                                Task::ready(*migrated).shared();
+                        }
+                        MigrationType::Settings => {
+                            migration_state.should_migrate_settings_task =
+                                Task::ready(*migrated).shared();
+                        }
+                    },
+                );
                 if self.migration_type == Some(*migration_type) {
                     let location = if *migrated {
                         ToolbarItemLocation::Secondary
@@ -111,14 +135,24 @@ impl ToolbarItemView for MigrationBanner {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
-        cx.notify();
-        self.should_migrate_task.take();
-        let Some(target) = active_pane_item
+        let old_migration_type = self.migration_type;
+
+        self.migration_type = if let Some(target) = active_pane_item
             .and_then(|item| item.act_as::<Editor>(cx))
             .and_then(|editor| editor.update(cx, |editor, cx| editor.target_file_abs_path(cx)))
-        else {
-            return ToolbarItemLocation::Hidden;
+        {
+            if &target == paths::keymap_file() {
+                Some(MigrationType::Keymap)
+            } else if &target == paths::settings_file() {
+                Some(MigrationType::Settings)
+            } else {
+                None
+            }
+        } else {
+            None
         };
+
+        if self.migration_type != old_migration_type {}
 
         if &target == paths::keymap_file() {
             self.migration_type = Some(MigrationType::Keymap);
