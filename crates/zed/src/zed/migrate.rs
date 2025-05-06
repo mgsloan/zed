@@ -1,6 +1,8 @@
 use anyhow::{Context as _, Result};
 use editor::Editor;
-use fs::Fs;
+use fs::{Fs, MTime};
+use futures::FutureExt as _;
+use futures::future::Shared;
 use migrator::{migrate_keymap, migrate_settings};
 use settings::{KeymapFile, SettingsStore};
 use util::ResultExt;
@@ -8,7 +10,7 @@ use workspace::notifications::NotifyTaskExt;
 
 use std::sync::Arc;
 
-use gpui::{Entity, EventEmitter, Global, Task};
+use gpui::{Empty, Entity, EventEmitter, Global, Task};
 use ui::prelude::*;
 use workspace::item::ItemHandle;
 use workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace};
@@ -20,8 +22,10 @@ pub enum MigrationType {
 }
 
 pub struct MigrationBanner {
+    /// Populated when the pane's item could have a migration.
     migration_type: Option<MigrationType>,
-    should_migrate_task: Option<Task<()>>,
+    should_migrate_keymap_task: Shared<Task<Option<(MTime, bool)>>>,
+    should_migrate_settings_task: Shared<Task<Option<(MTime, bool)>>>,
 }
 
 pub enum MigrationEvent {
@@ -61,25 +65,15 @@ impl MigrationBanner {
             )
             .detach();
         }
+        let fs = <dyn Fs>::global(cx);
         Self {
             migration_type: None,
-            should_migrate_task: None,
-        }
-    }
-
-    fn backup_file_name(&self) -> String {
-        match self.migration_type {
-            Some(MigrationType::Keymap) => paths::keymap_backup_file()
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            Some(MigrationType::Settings) => paths::settings_backup_file()
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            None => String::new(),
+            should_migrate_keymap_task: cx
+                .background_spawn(should_migrate_keymap(fs.clone(), None))
+                .shared(),
+            should_migrate_settings_task: cx
+                .background_spawn(should_migrate_settings(fs.clone(), None))
+                .shared(),
         }
     }
 
@@ -89,6 +83,7 @@ impl MigrationBanner {
                 migration_type,
                 migrated,
             } => {
+                // todo! also replace the should migrate tasks? Need mtime though.
                 if self.migration_type == Some(*migration_type) {
                     let location = if *migrated {
                         ToolbarItemLocation::Secondary
@@ -101,6 +96,42 @@ impl MigrationBanner {
             }
         }
     }
+
+    fn check_should_migrate_keymap(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Shared<Task<Option<(MTime, bool)>>> {
+        let last_result = self.should_migrate_keymap_task.clone().now_or_never();
+        match last_result {
+            None => self.should_migrate_keymap_task.clone(),
+            Some(last_result) => {
+                let fs = <dyn Fs>::global(cx);
+                let task = cx
+                    .background_spawn(should_migrate_keymap(fs, last_result))
+                    .shared();
+                self.should_migrate_keymap_task = task.clone();
+                task
+            }
+        }
+    }
+
+    fn check_should_migrate_settings(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Shared<Task<Option<(MTime, bool)>>> {
+        let last_result = self.should_migrate_settings_task.clone().now_or_never();
+        match last_result {
+            None => self.should_migrate_settings_task.clone(),
+            Some(last_result) => {
+                let fs = <dyn Fs>::global(cx);
+                let task = cx
+                    .background_spawn(should_migrate_settings(fs, last_result))
+                    .shared();
+                self.should_migrate_settings_task = task.clone();
+                task
+            }
+        }
+    }
 }
 
 impl EventEmitter<ToolbarItemEvent> for MigrationBanner {}
@@ -109,63 +140,99 @@ impl ToolbarItemView for MigrationBanner {
     fn set_active_pane_item(
         &mut self,
         active_pane_item: Option<&dyn ItemHandle>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
         cx.notify();
-        self.should_migrate_task.take();
-        let Some(target) = active_pane_item
+
+        self.migration_type = if let Some(target) = active_pane_item
             .and_then(|item| item.act_as::<Editor>(cx))
             .and_then(|editor| editor.update(cx, |editor, cx| editor.target_file_abs_path(cx)))
-        else {
-            return ToolbarItemLocation::Hidden;
+        {
+            if &target == paths::keymap_file() {
+                Some(MigrationType::Keymap)
+            } else if &target == paths::settings_file() {
+                Some(MigrationType::Settings)
+            } else {
+                None
+            }
+        } else {
+            None
         };
 
-        if &target == paths::keymap_file() {
-            self.migration_type = Some(MigrationType::Keymap);
-            let fs = <dyn Fs>::global(cx);
-            let should_migrate = cx.background_spawn(should_migrate_keymap(fs));
-            self.should_migrate_task = Some(cx.spawn_in(window, async move |this, cx| {
-                if let Ok(true) = should_migrate.await {
-                    this.update(cx, |_, cx| {
-                        cx.emit(ToolbarItemEvent::ChangeLocation(
-                            ToolbarItemLocation::Secondary,
-                        ));
-                        cx.notify();
-                    })
-                    .log_err();
-                }
-            }));
-        } else if &target == paths::settings_file() {
-            self.migration_type = Some(MigrationType::Settings);
-            let fs = <dyn Fs>::global(cx);
-            let should_migrate = cx.background_spawn(should_migrate_settings(fs));
-            self.should_migrate_task = Some(cx.spawn_in(window, async move |this, cx| {
-                if let Ok(true) = should_migrate.await {
-                    this.update(cx, |_, cx| {
-                        cx.emit(ToolbarItemEvent::ChangeLocation(
-                            ToolbarItemLocation::Secondary,
-                        ));
-                        cx.notify();
-                    })
-                    .log_err();
-                }
-            }));
+        match self.migration_type {
+            None => {}
+            Some(MigrationType::Keymap) => {
+                let should_migrate = self.check_should_migrate_keymap(cx);
+                cx.spawn(async move |this, cx| {
+                    if let Some((_, true)) = should_migrate.await {
+                        this.update(cx, |this, cx| {
+                            // Only show the banner if keymap still open.
+                            if this.migration_type == Some(MigrationType::Keymap) {
+                                cx.emit(ToolbarItemEvent::ChangeLocation(
+                                    ToolbarItemLocation::Secondary,
+                                ));
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }
+            Some(MigrationType::Settings) => {
+                let should_migrate = self.check_should_migrate_settings(cx);
+                cx.spawn(async move |this, cx| {
+                    if let Some((_, true)) = should_migrate.await {
+                        this.update(cx, |this, cx| {
+                            // Only show the banner if settings still open.
+                            if this.migration_type == Some(MigrationType::Settings) {
+                                cx.emit(ToolbarItemEvent::ChangeLocation(
+                                    ToolbarItemLocation::Secondary,
+                                ));
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }
         }
 
-        return ToolbarItemLocation::Hidden;
+        ToolbarItemLocation::Hidden
+    }
+}
+
+impl MigrationType {
+    fn file_type(self) -> &'static str {
+        match self {
+            MigrationType::Keymap => "keymap",
+            MigrationType::Settings => "settings",
+        }
+    }
+
+    fn backup_file_name(self) -> String {
+        match self {
+            MigrationType::Keymap => paths::keymap_backup_file()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            MigrationType::Settings => paths::settings_backup_file()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        }
     }
 }
 
 impl Render for MigrationBanner {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let migration_type = self.migration_type;
-        let file_type = match migration_type {
-            Some(MigrationType::Keymap) => "keymap",
-            Some(MigrationType::Settings) => "settings",
-            None => "",
+        let Some(migration_type) = self.migration_type else {
+            return Empty.into_any_element();
         };
-        let backup_file_name = self.backup_file_name();
 
         h_flex()
             .py_1()
@@ -193,7 +260,7 @@ impl Render for MigrationBanner {
                                 Label::new(format!(
                                     "Your {} file uses deprecated settings which can be \
                                     automatically updated. A backup will be saved to",
-                                    file_type
+                                    migration_type.file_type(),
                                 ))
                                 .color(Color::Default),
                             )
@@ -203,7 +270,7 @@ impl Render for MigrationBanner {
                                     .bg(cx.theme().colors().background)
                                     .rounded_xs()
                                     .child(
-                                        Label::new(backup_file_name)
+                                        Label::new(migration_type.backup_file_name())
                                             .buffer_font(cx)
                                             .size(LabelSize::Small),
                                     ),
@@ -215,15 +282,14 @@ impl Render for MigrationBanner {
                     move |_, window, cx| {
                         let fs = <dyn Fs>::global(cx);
                         match migration_type {
-                            Some(MigrationType::Keymap) => {
+                            MigrationType::Keymap => {
                                 cx.background_spawn(write_keymap_migration(fs.clone()))
                                     .detach_and_notify_err(window, cx);
                             }
-                            Some(MigrationType::Settings) => {
+                            MigrationType::Settings => {
                                 cx.background_spawn(write_settings_migration(fs.clone()))
                                     .detach_and_notify_err(window, cx);
                             }
-                            None => unreachable!(),
                         }
                     },
                 ),
@@ -232,20 +298,46 @@ impl Render for MigrationBanner {
     }
 }
 
-async fn should_migrate_keymap(fs: Arc<dyn Fs>) -> Result<bool> {
-    let old_text = KeymapFile::load_keymap_file(&fs).await?;
-    if let Ok(Some(_)) = migrate_keymap(&old_text) {
-        return Ok(true);
-    };
-    Ok(false)
+async fn should_migrate_keymap(
+    fs: Arc<dyn Fs>,
+    last_result: Option<(MTime, bool)>,
+) -> Option<(MTime, bool)> {
+    let metadata = fs
+        .metadata(paths::keymap_file())
+        .await
+        .log_err()
+        .flatten()?;
+    let mtime = metadata.mtime;
+    if let Some((last_mtime, last_should_migrate)) = last_result {
+        if mtime == last_mtime {
+            return Some((last_mtime, last_should_migrate));
+        }
+    }
+
+    let old_text = KeymapFile::load_keymap_file(&fs).await.log_err()?;
+    let should_migrate = migrate_keymap(&old_text).log_err().flatten().is_some();
+    Some((mtime, should_migrate))
 }
 
-async fn should_migrate_settings(fs: Arc<dyn Fs>) -> Result<bool> {
-    let old_text = SettingsStore::load_settings(&fs).await?;
-    if let Ok(Some(_)) = migrate_settings(&old_text) {
-        return Ok(true);
-    };
-    Ok(false)
+async fn should_migrate_settings(
+    fs: Arc<dyn Fs>,
+    last_result: Option<(MTime, bool)>,
+) -> Option<(MTime, bool)> {
+    let metadata = fs
+        .metadata(paths::settings_file())
+        .await
+        .log_err()
+        .flatten()?;
+    let mtime = metadata.mtime;
+    if let Some((last_mtime, last_should_migrate)) = last_result {
+        if mtime == last_mtime {
+            return Some((last_mtime, last_should_migrate));
+        }
+    }
+
+    let old_text = SettingsStore::load_settings(&fs).await.log_err()?;
+    let should_migrate = migrate_settings(&old_text).log_err().flatten().is_some();
+    Some((mtime, should_migrate))
 }
 
 async fn write_keymap_migration(fs: Arc<dyn Fs>) -> Result<()> {
