@@ -14,6 +14,7 @@ mod debug;
 mod history_store;
 mod inline_assistant;
 mod inline_prompt_editor;
+mod live_context;
 mod message_editor;
 mod profile_selector;
 mod slash_command_settings;
@@ -85,6 +86,7 @@ actions!(
         KeepAll,
         Follow,
         ResetTrialUpsell,
+        DeployLiveContext,
     ]
 );
 

@@ -58,16 +58,17 @@ use crate::active_thread::{self, ActiveThread, ActiveThreadEvent};
 use crate::agent_configuration::{AgentConfiguration, AssistantConfigurationEvent};
 use crate::agent_diff::AgentDiff;
 use crate::history_store::{HistoryStore, RecentEntry};
+use crate::live_context::LiveContextPane;
 use crate::message_editor::{MessageEditor, MessageEditorEvent};
 use crate::thread::{Thread, ThreadError, ThreadId, ThreadSummary, TokenUsageRatio};
 use crate::thread_history::{HistoryEntryElement, ThreadHistory};
 use crate::thread_store::ThreadStore;
 use crate::ui::AgentOnboardingModal;
 use crate::{
-    AddContextServer, AgentDiffPane, ContextStore, DeleteRecentlyOpenThread, ExpandMessageEditor,
-    Follow, InlineAssistant, NewTextThread, NewThread, OpenActiveThreadAsMarkdown, OpenAgentDiff,
-    OpenHistory, ResetTrialUpsell, TextThreadStore, ThreadEvent, ToggleContextPicker,
-    ToggleNavigationMenu, ToggleOptionsMenu,
+    AddContextServer, AgentDiffPane, ContextStore, DeleteRecentlyOpenThread, DeployLiveContext,
+    ExpandMessageEditor, Follow, InlineAssistant, NewTextThread, NewThread,
+    OpenActiveThreadAsMarkdown, OpenAgentDiff, OpenHistory, ResetTrialUpsell, TextThreadStore,
+    ThreadEvent, ToggleContextPicker, ToggleNavigationMenu, ToggleOptionsMenu,
 };
 
 const AGENT_PANEL_KEY: &str = "agent_panel";
@@ -905,6 +906,18 @@ impl AgentPanel {
             cx,
         )
         .detach_and_log_err(cx);
+    }
+
+    fn deploy_live_context(
+        &mut self,
+        _action: &DeployLiveContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        LiveContextPane::deploy(workspace, window, cx);
     }
 
     fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2795,6 +2808,7 @@ impl Render for AgentPanel {
             }))
             .on_action(cx.listener(Self::open_active_thread_as_markdown))
             .on_action(cx.listener(Self::deploy_rules_library))
+            .on_action(cx.listener(Self::deploy_live_context))
             .on_action(cx.listener(Self::open_agent_diff))
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::toggle_navigation_menu))
