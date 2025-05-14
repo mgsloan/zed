@@ -22,7 +22,7 @@ pub enum ContextMenuItem {
     Entry(ContextMenuEntry),
     CustomEntry {
         entry_render: Box<dyn Fn(&mut Window, &mut App) -> AnyElement>,
-        handler: Rc<dyn Fn(Option<&FocusHandle>, &mut Window, &mut App)>,
+        handler: Rc<dyn Fn(&FocusHandle, &mut Window, &mut App)>,
         selectable: bool,
     },
 }
@@ -47,12 +47,13 @@ pub struct ContextMenuEntry {
     icon_position: IconPosition,
     icon_size: IconSize,
     icon_color: Option<Color>,
-    handler: Rc<dyn Fn(Option<&FocusHandle>, &mut Window, &mut App)>,
+    handler: Rc<dyn Fn(&FocusHandle, &mut Window, &mut App)>,
     action: Option<Box<dyn Action>>,
     disabled: bool,
     documentation_aside: Option<DocumentationAside>,
     end_slot_icon: Option<IconName>,
     end_slot_title: Option<SharedString>,
+    // todo! also always give FocusHandle?
     end_slot_handler: Option<Rc<dyn Fn(Option<&FocusHandle>, &mut Window, &mut App)>>,
     show_end_slot_on_hover: bool,
 }
@@ -524,10 +525,14 @@ impl ContextMenu {
             label: label.into(),
             action: Some(action.boxed_clone()),
             handler: Rc::new(move |context, window, cx| {
-                if let Some(context) = &context {
-                    window.focus(context);
-                }
-                window.dispatch_action(action.boxed_clone(), cx);
+                // todo! remove clones?
+                let context = context.clone();
+                let action = action.boxed_clone();
+                dbg!("handler");
+                window.defer(cx, move |window, cx| {
+                    dbg!("reached deferred", &context);
+                    context.dispatch_action(action.as_ref(), window, cx);
+                });
             }),
             icon: None,
             icon_position: IconPosition::End,
@@ -553,10 +558,7 @@ impl ContextMenu {
             label: label.into(),
             action: Some(action.boxed_clone()),
             handler: Rc::new(move |context, window, cx| {
-                if let Some(context) = &context {
-                    window.focus(context);
-                }
-                window.dispatch_action(action.boxed_clone(), cx);
+                context.dispatch_action(action.as_ref(), window, cx);
             }),
             icon: None,
             icon_size: IconSize::Small,
@@ -577,7 +579,10 @@ impl ContextMenu {
             toggle: None,
             label: label.into(),
             action: Some(action.boxed_clone()),
-            handler: Rc::new(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)),
+            handler: Rc::new(move |context, window, cx| {
+                // todo! valid to change this?
+                context.dispatch_action(action.as_ref(), window, cx);
+            }),
             icon: Some(IconName::ArrowUpRight),
             icon_size: IconSize::XSmall,
             icon_position: IconPosition::End,
@@ -626,7 +631,7 @@ impl ContextMenu {
     }
 
     pub fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        let context = self.action_context.as_ref();
+        let context = self.action_context.as_ref().unwrap_or(&self.focus_handle);
         if let Some(
             ContextMenuItem::Entry(ContextMenuEntry {
                 handler,
@@ -743,7 +748,7 @@ impl ContextMenu {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let context = self.action_context.as_ref();
+        let context = self.action_context.as_ref().unwrap_or(&self.focus_handle);
         self.documentation_aside = None;
         let item = self.items.get(ix)?;
         if item.is_selectable() {
@@ -866,10 +871,14 @@ impl ContextMenu {
                     .selectable(selectable)
                     .when(selectable, |item| {
                         item.on_click({
-                            let context = self.action_context.clone();
+                            let context = self
+                                .action_context
+                                .as_ref()
+                                .unwrap_or(&self.focus_handle)
+                                .clone();
                             let keep_open_on_confirm = self.keep_open_on_confirm;
                             move |_, window, cx| {
-                                handler(context.as_ref(), window, cx);
+                                handler(&context, window, cx);
                                 menu.update(cx, |menu, cx| {
                                     menu.clicked = true;
 
@@ -1074,10 +1083,14 @@ impl ContextMenu {
                         },
                     )
                     .on_click({
-                        let context = self.action_context.clone();
+                        let context = self
+                            .action_context
+                            .as_ref()
+                            .unwrap_or(&self.focus_handle)
+                            .clone();
                         let keep_open_on_confirm = self.keep_open_on_confirm;
                         move |_, window, cx| {
-                            handler(context.as_ref(), window, cx);
+                            handler(&context, window, cx);
                             menu.update(cx, |menu, cx| {
                                 menu.clicked = true;
                                 if keep_open_on_confirm {

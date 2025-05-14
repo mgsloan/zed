@@ -3546,6 +3546,7 @@ impl Window {
                     listener(any_action, DispatchPhase::Capture, self, cx);
 
                     if !cx.propagate_event {
+                        dbg!("capture blocked prop for", action.name());
                         return;
                     }
                 }
@@ -3562,6 +3563,9 @@ impl Window {
             {
                 let any_action = action.as_any();
                 if action_type == any_action.type_id() {
+                    if action.name().contains("NewTextThread") {
+                        dbg!("found handler for ", action.name());
+                    }
                     cx.propagate_event = false; // Actions stop propagation by default during the bubble phase
                     listener(any_action, DispatchPhase::Bubble, self, cx);
 

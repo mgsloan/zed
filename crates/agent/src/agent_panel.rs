@@ -100,7 +100,9 @@ pub fn init(cx: &mut App) {
                     }
                 })
                 .register_action(|workspace, _: &NewTextThread, window, cx| {
+                    dbg!("action handler called");
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                        dbg!("panel exists");
                         workspace.focus_panel::<AgentPanel>(window, cx);
                         panel.update(cx, |panel, cx| panel.new_prompt_editor(window, cx));
                     }
