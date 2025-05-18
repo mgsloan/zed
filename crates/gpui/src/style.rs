@@ -616,33 +616,30 @@ impl Style {
 
         window.paint_shadows(bounds, corner_radii, &self.box_shadow);
 
+        // todo! Bring back the optimization for the case where there is no background - only need
+        // to draw borders. Tricky to handle max corner radius (circles / pills) efficiently.
+
+        /*
         let background_color = self.background.as_ref().and_then(Fill::color);
         if background_color.map_or(false, |color| !color.is_transparent()) {
-            let mut border_color = match background_color {
-                Some(color) => match color.tag {
-                    BackgroundTag::Solid => color.solid,
-                    BackgroundTag::LinearGradient => color
-                        .colors
-                        .first()
-                        .map(|stop| stop.color)
-                        .unwrap_or_default(),
-                    BackgroundTag::PatternSlash => color.solid,
-                },
-                None => Hsla::default(),
-            };
-            border_color.a = 0.;
-            window.paint_quad(quad(
-                bounds,
-                corner_radii,
-                background_color.unwrap_or_default(),
-                Edges::default(),
-                border_color,
-                self.border_style,
-            ));
         }
+        */
+
+        window.paint_quad(quad(
+            bounds,
+            corner_radii,
+            self.background
+                .as_ref()
+                .and_then(Fill::color)
+                .unwrap_or_default(),
+            self.border_widths.to_pixels(rem_size),
+            self.border_color.unwrap_or_default(),
+            self.border_style,
+        ));
 
         continuation(window, cx);
 
+        /*
         if self.is_border_visible() {
             let border_widths = self.border_widths.to_pixels(rem_size);
             let max_border_width = border_widths.max();
@@ -704,6 +701,7 @@ impl Style {
                 },
             );
         }
+        */
 
         #[cfg(debug_assertions)]
         if self.debug_below {

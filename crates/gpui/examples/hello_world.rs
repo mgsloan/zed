@@ -13,7 +13,7 @@ impl Render for HelloWorld {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x505050))
+            .bg(rgb(0xffffff))
             .size(px(500.0))
             .justify_center()
             .items_center()
@@ -29,12 +29,12 @@ impl Render for HelloWorld {
                     .gap_2()
                     .child(
                         div()
-                            .size_8()
-                            .bg(gpui::red())
-                            .border_1()
-                            .border_dashed()
-                            .rounded_md()
-                            .border_color(gpui::white()),
+                            .size_64()
+                            .bg(gpui::black())
+                            .border_16()
+                            .rounded_3xl()
+                            .border_color(gpui::red()),
+                        // .border_color(gpui::white().alpha(0.5)),
                     )
                     .child(
                         div()
