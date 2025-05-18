@@ -1622,6 +1622,7 @@ pub struct Edges<T: Clone + Default + Debug> {
     pub left: T,
 }
 
+/* todo! remove
 impl<T> Mul for Edges<T>
 where
     T: Mul<Output = T> + Clone + Default + Debug,
@@ -1637,17 +1638,35 @@ where
         }
     }
 }
+*/
 
-impl<T, S> MulAssign<S> for Edges<T>
+impl<T, S> Mul<S> for Edges<T>
 where
     T: Mul<S, Output = T> + Clone + Default + Debug,
     S: Clone,
 {
+    type Output = Self;
+
+    fn mul(self, rhs: S) -> Self::Output {
+        Self {
+            top: self.top.clone() * rhs.clone(),
+            right: self.right.clone() * rhs.clone(),
+            bottom: self.bottom.clone() * rhs.clone(),
+            left: self.left.clone() * rhs,
+        }
+    }
+}
+
+impl<T, S> MulAssign<S> for Edges<T>
+where
+    T: MulAssign<S> + Clone + Default + Debug,
+    S: Clone,
+{
     fn mul_assign(&mut self, rhs: S) {
-        self.top = self.top.clone() * rhs.clone();
-        self.right = self.right.clone() * rhs.clone();
-        self.bottom = self.bottom.clone() * rhs.clone();
-        self.left = self.left.clone() * rhs;
+        self.top *= rhs.clone();
+        self.right *= rhs.clone();
+        self.bottom *= rhs.clone();
+        self.left *= rhs;
     }
 }
 

@@ -616,6 +616,9 @@ impl Style {
 
         window.paint_shadows(bounds, corner_radii, &self.box_shadow);
 
+        let is_border_visible = self.is_border_visible();
+        let border_widths = self.border_widths.to_pixels(rem_size);
+
         let background_color = self.background.as_ref().and_then(Fill::color);
         if background_color.map_or(false, |color| !color.is_transparent()) {
             let mut border_color = match background_color {
@@ -631,6 +634,15 @@ impl Style {
                 None => Hsla::default(),
             };
             border_color.a = 0.;
+            let inset_bounds = if is_border_visible {
+                // Inset the bounds so that the outer edge antialiasing isn't drawn atop the
+                // background color.
+                //
+                // todo! This doesn't properly handle transparent borders...
+                bounds.extend(border_widths * -0.5)
+            } else {
+                bounds
+            };
             window.paint_quad(quad(
                 bounds,
                 corner_radii,
@@ -643,8 +655,7 @@ impl Style {
 
         continuation(window, cx);
 
-        if self.is_border_visible() {
-            let border_widths = self.border_widths.to_pixels(rem_size);
+        if is_border_visible {
             let max_border_width = border_widths.max();
             let max_corner_radius = corner_radii.max();
 
