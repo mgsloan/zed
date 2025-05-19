@@ -4,6 +4,7 @@ pub use log as log_impl;
 mod env_config;
 pub mod filter;
 pub mod sink;
+mod throttle;
 
 pub use sink::{flush, init_output_file, init_output_stdout};
 
@@ -135,6 +136,57 @@ macro_rules! error {
     };
     ($($arg:tt)+) => {
         $crate::log!($crate::default_logger!(), $crate::log_impl::Level::Error, $($arg)+);
+    };
+}
+
+#[macro_export]
+macro_rules! log_once_every {
+    ($logger:expr, $level:expr, $interval:expr, $($arg:tt)+) => {
+        let level = $level;
+        let logger = $logger;
+        let module_path = module_path!();
+        let enabled = $crate::filter::is_scope_enabled(&logger.scope, Some(module_path), level);
+        if enabled {
+            let throttled = $crate::throttle::check_throttled(module_path);
+            if !throttled {
+                $crate::sink::submit($crate::sink::Record {
+                    scope: logger.scope,
+                    level,
+                    message: &format_args!($($arg)+),
+                    module_path: Some(module_path!()),
+                });
+            }
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! info_once_every {
+    ($logger:expr => $($arg:tt)+) => {
+        $crate::log_once_every!($logger, $crate::log_impl::Level::Info, $($arg)+);
+    };
+    ($($arg:tt)+) => {
+        $crate::log_once_every!($crate::default_logger!(), $crate::log_impl::Level::Info, $($arg)+);
+    };
+}
+
+#[macro_export]
+macro_rules! warn_once_every {
+    ($logger:expr => $($arg:tt)+) => {
+        $crate::log_once_every!($logger, $crate::log_impl::Level::Warn, $($arg)+);
+    };
+    ($($arg:tt)+) => {
+        $crate::log_once_every!($crate::default_logger!(), $crate::log_impl::Level::Warn, $($arg)+);
+    };
+}
+
+#[macro_export]
+macro_rules! error_once_every {
+    ($logger:expr => $($arg:tt)+) => {
+        $crate::log_once_every!($logger, $crate::log_impl::Level::Error, $($arg)+);
+    };
+    ($($arg:tt)+) => {
+        $crate::log_once_every!($crate::default_logger!(), $crate::log_impl::Level::Error, $($arg)+);
     };
 }
 
