@@ -1011,12 +1011,14 @@ impl App {
         F: FnOnce(AnyView, &mut Window, &mut App) -> T,
     {
         self.update(|cx| {
-            let mut window = cx
+            let Some(mut window) = cx
                 .windows
                 .get_mut(id)
                 .ok_or_else(|| anyhow!("window not found"))?
                 .take()
-                .ok_or_else(|| anyhow!("window not found"))?;
+            else {
+                double_lease_panic::<Window>("update");
+            };
 
             let root_view = window.root.clone().unwrap();
 
@@ -1763,12 +1765,14 @@ impl AppContext for App {
     where
         T: 'static,
     {
-        let window = self
+        let Some(window) = self
             .windows
             .get(window.id)
             .ok_or_else(|| anyhow!("window not found"))?
             .as_ref()
-            .expect("attempted to read a window that is already on the stack");
+        else {
+            double_lease_panic::<Window>("read")
+        };
 
         let root_view = window.root.clone().unwrap();
         let view = root_view
