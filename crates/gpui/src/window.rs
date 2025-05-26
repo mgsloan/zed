@@ -481,7 +481,7 @@ pub(crate) struct DeferredDraw {
     current_view: EntityId,
     priority: usize,
     parent_node: DispatchNodeId,
-    global_element_id: GlobalElementId,
+    element_id_stack: Option<Rc<GlobalElementId>>,
     text_style_stack: Vec<TextStyleRefinement>,
     element: Option<AnyElement>,
     absolute_offset: Point<Pixels>,
@@ -628,7 +628,7 @@ pub struct Window {
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
-    pub(crate) global_element_id: GlobalElementId,
+    pub(crate) element_id_stack: Option<Rc<GlobalElementId>>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -917,7 +917,7 @@ impl Window {
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
-            global_element_id: GlobalElementId::default(),
+            element_id_stack: None,
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
@@ -1807,13 +1807,13 @@ impl Window {
     }
 
     fn prepaint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
-        assert!(self.global_element_id.is_empty());
+        assert!(self.element_id_stack.is_none());
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
-            self.global_element_id
-                .clone_from(&deferred_draw.global_element_id);
+            self.element_id_stack
+                .clone_from(&deferred_draw.element_id_stack);
             self.text_style_stack
                 .clone_from(&deferred_draw.text_style_stack);
             self.next_frame
@@ -1839,18 +1839,18 @@ impl Window {
             "cannot call defer_draw during deferred drawing"
         );
         self.next_frame.deferred_draws = deferred_draws;
-        self.global_element_id = GlobalElementId::default();
+        self.element_id_stack = None;
         self.text_style_stack.clear();
     }
 
     fn paint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
-        assert!(self.global_element_id.is_empty());
+        assert!(self.element_id_stack.is_none());
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
             let mut deferred_draw = &mut deferred_draws[*deferred_draw_ix];
-            self.global_element_id
-                .clone_from(&deferred_draw.global_element_id);
+            self.element_id_stack
+                .clone_from(&deferred_draw.element_id_stack);
             self.next_frame
                 .dispatch_tree
                 .set_active_node(deferred_draw.parent_node);
@@ -1867,7 +1867,7 @@ impl Window {
             deferred_draw.paint_range = paint_start..paint_end;
         }
         self.next_frame.deferred_draws = deferred_draws;
-        self.global_element_id = GlobalElementId::default();
+        self.element_id_stack = None;
     }
 
     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
@@ -1897,7 +1897,7 @@ impl Window {
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
-                .map(|(id, type_id)| (GlobalElementId(id.0.clone()), *type_id)),
+                .cloned(),
         );
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
@@ -1919,7 +1919,7 @@ impl Window {
                 .map(|deferred_draw| DeferredDraw {
                     current_view: deferred_draw.current_view,
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
-                    global_element_id: deferred_draw.global_element_id.clone(),
+                    element_id_stack: deferred_draw.element_id_stack.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
                     priority: deferred_draw.priority,
                     element: None,
@@ -1964,7 +1964,7 @@ impl Window {
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
-                .map(|(id, type_id)| (GlobalElementId(id.0.clone()), *type_id)),
+                .cloned(),
         );
 
         self.text_system
@@ -2207,12 +2207,15 @@ impl Window {
     pub fn with_global_id<R>(
         &mut self,
         element_id: ElementId,
-        f: impl FnOnce(GlobalElementId, &mut Self) -> R,
+        f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
     ) -> R {
-        let original_id = GlobalElementId(self.global_element_id.0.take());
-        self.global_element_id = original_id.add(element_id);
-        let result = f(self.global_element_id.clone(), self);
-        self.global_element_id = original_id;
+        let new_id = Rc::new(GlobalElementId::new(
+            self.element_id_stack.clone(),
+            element_id,
+        ));
+        let original_id = self.element_id_stack.replace(new_id.clone());
+        let result = f(&new_id, self);
+        self.element_id_stack = original_id;
         result
     }
 
@@ -2220,7 +2223,7 @@ impl Window {
     pub fn with_optional_global_id<R>(
         &mut self,
         element_id: Option<ElementId>,
-        f: impl FnOnce(Option<GlobalElementId>, &mut Self) -> R,
+        f: impl FnOnce(Option<&GlobalElementId>, &mut Self) -> R,
     ) -> R {
         if let Some(element_id) = element_id {
             self.with_global_id(element_id, |global_id, window| f(Some(global_id), window))
@@ -2357,7 +2360,7 @@ impl Window {
         self.next_frame.deferred_draws.push(DeferredDraw {
             current_view: self.current_view(),
             parent_node,
-            global_element_id: self.global_element_id.clone(),
+            element_id_stack: self.element_id_stack.clone(),
             text_style_stack: self.text_style_stack.clone(),
             priority,
             element: Some(element),

@@ -267,42 +267,54 @@ impl<C: RenderOnce> IntoElement for Component<C> {
 
 /// A globally unique identifier for an element, used to track state across frames.
 #[derive(Clone, Default)]
-pub struct GlobalElementId(pub(crate) Option<Rc<InternalGlobalElementId>>);
+pub struct GlobalElementId {
+    pub(crate) parent: Option<Rc<GlobalElementId>>,
+
+    pub(crate) element_id: Option<ElementId>,
+
+    /// todo! document
+    pub(crate) element_path_hash: u64,
+
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub(crate) location_and_instance_id: Option<(&'static std::panic::Location<'static>, usize)>,
+}
 
 impl GlobalElementId {
-    pub(crate) fn add(&self, element_id: ElementId) -> GlobalElementId {
+    pub(crate) fn new(
+        parent: Option<Rc<GlobalElementId>>,
+        element_id: ElementId,
+    ) -> GlobalElementId {
         let mut hasher = FxHasher::default();
-        if let Some(parent) = &self.0 {
+        if let Some(parent) = &parent {
             hasher.write_u64(parent.element_path_hash);
         }
         element_id.hash(&mut hasher);
         let element_path_hash = hasher.finish();
 
-        GlobalElementId(Some(Rc::new(InternalGlobalElementId {
-            parent: self.clone(),
+        GlobalElementId {
+            parent: parent,
             element_path_hash,
+            #[cfg(not(any(feature = "inspector", debug_assertions)))]
             element_id,
-        })))
-    }
-
-    /// todo! document
-    pub fn is_empty(&self) -> bool {
-        self.0.is_none()
+            #[cfg(any(feature = "inspector", debug_assertions))]
+            element_id: Some(element_id),
+            #[cfg(any(feature = "inspector", debug_assertions))]
+            location_and_instance_id: None,
+        }
     }
 
     fn reversed_element_ids(&self) -> Vec<&ElementId> {
-        if let Some(mut current) = self.0.as_ref() {
-            let mut reversed_element_ids = Vec::new();
-            loop {
-                reversed_element_ids.push(&current.element_id);
-                if let Some(next) = &current.parent.0 {
-                    current = next;
-                } else {
-                    return reversed_element_ids;
-                }
+        let mut current = self;
+        let mut reversed_element_ids = Vec::new();
+        loop {
+            if let Some(element_id) = &current.element_id {
+                reversed_element_ids.push(element_id);
             }
-        } else {
-            Vec::new()
+            if let Some(next) = &current.parent {
+                current = next;
+            } else {
+                return reversed_element_ids;
+            }
         }
     }
 }
@@ -311,24 +323,16 @@ impl Eq for GlobalElementId {}
 
 impl PartialEq for GlobalElementId {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.0.as_ref(), &other.0.as_ref()) {
-            (Some(this), Some(other)) => {
-                // Theoretically this could produce false positives, but in practice it's pretty
-                // much impossible. Comparing the hashes alone has extremely rare false positives.
-                &this.element_path_hash == &other.element_path_hash
-                    && &this.element_id == &other.element_id
-            }
-            (None, None) => true,
-            _ => false,
-        }
+        // Theoretically this could produce false positives, but in practice it's pretty
+        // much impossible. Comparing the hashes alone has extremely rare false positives.
+        &self.element_path_hash == &other.element_path_hash && &self.element_id == &other.element_id
     }
 }
 
+/// todo! document that it can be more efficient
 impl Hash for GlobalElementId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        if let Some(element_id) = &self.0 {
-            state.write_u64(element_id.element_path_hash);
-        }
+        state.write_u64(self.element_path_hash);
     }
 }
 
@@ -350,17 +354,6 @@ impl Display for GlobalElementId {
         }
         Ok(())
     }
-}
-
-// todo! rename + document
-#[derive(Clone)]
-pub(crate) struct InternalGlobalElementId {
-    pub(crate) parent: GlobalElementId,
-
-    /// todo! document
-    pub(crate) element_path_hash: u64,
-
-    pub(crate) element_id: ElementId,
 }
 
 trait ElementObject {
@@ -433,7 +426,7 @@ impl<E: Element> Drawable<E> {
                     {
                         inspector_id = self.element.source_location().map(|source| {
                             let path = crate::InspectorElementPath {
-                                global_id: window.global_element_id.clone(),
+                                global_id: window.element_id_stack.clone(),
                                 source_location: source,
                             };
                             window.build_inspector_element_id(path)

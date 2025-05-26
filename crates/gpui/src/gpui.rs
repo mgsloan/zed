@@ -81,6 +81,7 @@ mod executor;
 mod geometry;
 mod global;
 mod input;
+#[cfg(any(feature = "inspector", debug_assertions))]
 mod inspector;
 mod interactive;
 mod key_dispatch;
