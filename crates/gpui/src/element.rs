@@ -41,7 +41,9 @@ pub(crate) use smallvec::SmallVec;
 use std::{
     any::Any,
     fmt::{self, Debug, Display},
+    hash::{Hash, Hasher},
     mem, panic,
+    rc::Rc,
 };
 
 /// Implemented by types that participate in laying out and painting the contents of a window.
@@ -265,8 +267,54 @@ impl<C: RenderOnce> IntoElement for Component<C> {
 }
 
 /// A globally unique identifier for an element, used to track state across frames.
-#[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
+#[derive(Default, Debug, Eq, PartialEq)]
+pub struct GlobalElementId(pub(crate) Option<InternalGlobalElementId>);
+
+impl PartialEq for GlobalElementId {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0.as_ref(), &other.0.as_ref()) {
+            (Some(this), Some(other)) => {
+                this.
+            }
+            (None, None) => {
+                false
+            }
+        }
+
+        if let Some((this, other)) = self.0.as_ref().zip(other.0.as_ref())
+    }
+}
+
+impl Hash for GlobalElementId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        if let Some(element_id) = self.0 {
+            state.write_u64(element_id.element_path_hash);
+        }
+    }
+}
+
+/// todo! rename + doc
+pub(crate) struct InternalGlobalElementId {
+    pub(crate) parent: Option<Rc<InternalGlobalElementId>>,
+
+    #[cfg(not(any(feature = "inspector", debug_assertions)))]
+    pub(crate) element_id: ElementId,
+
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub(crate) element_id: Option<ElementId>,
+
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub(crate) location_and_instance_id: Option<(&'static std::panic::Location<'static>, usize)>,
+
+    pub(crate) element_path_hash: u64,
+
+    pub(crate) pick_path_hash: u64,
+}
+
+impl InternalGlobalElementId {
+    fn element_path_eq(&self, other: )
+
+}
 
 impl Display for GlobalElementId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
