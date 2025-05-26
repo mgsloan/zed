@@ -1,3 +1,23 @@
+// Plan 1:
+//
+// * `InspectorElementId` is a linked list of (Option<ElementId>, Option<location>). Instance ID map
+// is based on this.
+//
+// * Picking turns into a `InspectorPickId` which is just `(GlobalElementId, location, instance-id)`
+//
+// * Checking if current element is picked looks like walking both Ids.
+//
+// Issue with this is that we don't really want all source locations when figuring out instance ID.
+
+// Plan 2:
+//
+// * `InspectorPath` is a linked list of `(Option<ElementId>, Option<location>, instance_id)`. It gets stored in
+// element state.
+//
+// * `InspectorElementId` renamed to `InspectorPickId`
+//
+// * `InspectorElementPath` renamed to `InspectorPickPath`
+
 /// A unique identifier for an element that can be inspected.
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub struct InspectorElementId {
