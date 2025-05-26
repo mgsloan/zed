@@ -21,16 +21,150 @@ pub use conditional::*;
 #[cfg(any(feature = "inspector", debug_assertions))]
 mod conditional {
     use super::*;
-    use crate::{AnyElement, App, Context, Empty, IntoElement, Render, Window};
-    use collections::FxHashMap;
-    use std::any::{Any, TypeId};
+    use crate::{
+        AnyElement, App, Context, ElementId, Empty, GlobalElementId, IntoElement, Render, Window,
+    };
+    use collections::{FxHashMap, FxHasher};
+    use std::{
+        any::{Any, TypeId},
+        hash::{Hash, Hasher as _},
+        rc::Rc,
+    };
+
+    /// todo! document
+    ///
+    /// todo! allow both to be empty?
+    ///
+    /// TODO: If this needs to be hashed, then use a `hash` field, merkle style.
+    pub struct InspectorPath {
+        /// todo! document
+        pub parent: Option<Rc<InspectorPath>>,
+        /// todo! document
+        pub element_id: Option<ElementId>,
+        /// todo! document
+        pub location_and_instance_id: Option<(&'static std::panic::Location<'static>, usize)>,
+        /// todo! document
+        pub pick_path_hash: u64,
+    }
+
+    /// todo! document
+    impl InspectorPath {
+        fn new(
+            parent: Option<Rc<InspectorPath>>,
+            element_id: Option<ElementId>,
+            location_and_instance_id: Option<(&'static std::panic::Location<'static>, usize)>,
+        ) -> Rc<Self> {
+            let mut pick_path_hasher = FxHasher::default();
+            if let Some(parent) = &parent {
+                pick_path_hasher.write_u64(parent.pick_path_hash);
+            }
+            element_id.hash(&mut pick_path_hasher);
+            let pick_path_hash = pick_path_hasher.finish();
+            Rc::new(InspectorPath {
+                parent,
+                element_id,
+                location_and_instance_id,
+                pick_path_hash,
+            })
+        }
+
+        pub fn pick_id_hash(&self) -> u64 {
+            let mut hasher = FxHasher::default();
+            hasher.write_u64(self.pick_path_hash);
+            self.location_and_instance_id.hash(&mut hasher);
+            return hasher.finish();
+        }
+
+        pub fn pick_id_eq(mut a: &Rc<InspectorPath>, mut b: &Rc<InspectorPath>) {
+            loop {
+                let Some(a_id) = &a.element_id else {
+                    if let Some(parent) = &a.parent {
+                        a = parent;
+                        continue;
+                    } else {
+                        break;
+                    }
+                };
+                let Some(b_id) = &b.element_id else {
+                    if let Some(parent) = &b.parent {
+                        b = parent;
+                        continue;
+                    } else {
+                        break;
+                    }
+                };
+            }
+        }
+
+        /// todo! document
+        pub fn to_pick_id(&self) -> Option<InspectorElementId> {
+            let Some((source_location, instance_id)) = &self.location_and_instance_id else {
+                return None;
+            };
+            let mut reverse_element_ids = Vec::new();
+            let mut current = self;
+            loop {
+                if let Some(element_id) = &current.element_id {
+                    reverse_element_ids.push(element_id.clone());
+                }
+                if let Some(parent) = &current.parent {
+                    current = &parent;
+                } else {
+                    break;
+                }
+            }
+            Some(InspectorElementId {
+                path: Rc::new(InspectorElementPath {
+                    global_id: GlobalElementId(reverse_element_ids.into_iter().rev().collect()),
+                    source_location,
+                }),
+                instance_id: *instance_id,
+            })
+        }
+
+        /// todo! document
+        pub fn matches_pick_id(&self, pick_id: &InspectorElementId) -> bool {
+            if let Some((source_location, instance_id)) = &self.location_and_instance_id {
+                if pick_id.instance_id != *instance_id
+                    || &pick_id.path.source_location != source_location
+                {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+            let mut current = self;
+            for picked_element_id in pick_id.path.global_id.0.iter().rev() {
+                if let Some(element_id) = &current.element_id {
+                    if picked_element_id != element_id {
+                        return false;
+                    }
+                }
+                if let Some(parent) = &current.parent {
+                    current = &parent;
+                } else {
+                    break;
+                }
+            }
+            loop {
+                if current.element_id.is_some() {
+                    return false;
+                }
+                if let Some(parent) = &current.parent {
+                    current = &parent;
+                } else {
+                    break;
+                }
+            }
+            return true;
+        }
+    }
 
     /// `GlobalElementId` qualified by source location of element construction.
     #[derive(Debug, Eq, PartialEq, Hash)]
     pub struct InspectorElementPath {
         /// The path to the nearest ancestor element that has an `ElementId`.
-        #[cfg(any(feature = "inspector", debug_assertions))]
-        pub global_id: crate::GlobalElementId,
+        pub global_id: GlobalElementId,
         /// Source location where this element was constructed.
         #[cfg(any(feature = "inspector", debug_assertions))]
         pub source_location: &'static std::panic::Location<'static>,
