@@ -29,10 +29,8 @@ mod conditional {
     #[derive(Debug, Eq, PartialEq, Hash)]
     pub struct InspectorElementPath {
         /// The path to the nearest ancestor element that has an `ElementId`.
-        #[cfg(any(feature = "inspector", debug_assertions))]
         pub global_id: crate::GlobalElementId,
         /// Source location where this element was constructed.
-        #[cfg(any(feature = "inspector", debug_assertions))]
         pub source_location: &'static std::panic::Location<'static>,
     }
 
