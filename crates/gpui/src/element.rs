@@ -36,12 +36,13 @@ use crate::{
     FocusHandle, InspectorElementId, LayoutId, Pixels, Point, Size, Style, Window,
     util::FluentBuilder,
 };
-use derive_more::{Deref, DerefMut};
-pub(crate) use smallvec::SmallVec;
+use collections::FxHasher;
 use std::{
     any::Any,
     fmt::{self, Debug, Display},
+    hash::{Hash, Hasher},
     mem, panic,
+    rc::Rc,
 };
 
 /// Implemented by types that participate in laying out and painting the contents of a window.
@@ -265,12 +266,83 @@ impl<C: RenderOnce> IntoElement for Component<C> {
 }
 
 /// A globally unique identifier for an element, used to track state across frames.
-#[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
+#[derive(Clone, Default)]
+pub struct GlobalElementId(pub(crate) Option<Rc<InternalGlobalElementId>>);
+
+impl GlobalElementId {
+    pub(crate) fn add(&self, element_id: ElementId) -> GlobalElementId {
+        let mut hasher = FxHasher::default();
+        if let Some(parent) = &self.0 {
+            hasher.write_u64(parent.element_path_hash);
+        }
+        element_id.hash(&mut hasher);
+        let element_path_hash = hasher.finish();
+
+        GlobalElementId(Some(Rc::new(InternalGlobalElementId {
+            parent: self.clone(),
+            element_path_hash,
+            element_id,
+        })))
+    }
+
+    /// todo! document
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    fn reversed_element_ids(&self) -> Vec<&ElementId> {
+        if let Some(mut current) = self.0.as_ref() {
+            let mut reversed_element_ids = Vec::new();
+            loop {
+                reversed_element_ids.push(&current.element_id);
+                if let Some(next) = &current.parent.0 {
+                    current = next;
+                } else {
+                    return reversed_element_ids;
+                }
+            }
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+impl Eq for GlobalElementId {}
+
+impl PartialEq for GlobalElementId {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0.as_ref(), &other.0.as_ref()) {
+            (Some(this), Some(other)) => {
+                // Theoretically this could produce false positives, but in practice it's pretty
+                // much impossible. Comparing the hashes alone has extremely rare false positives.
+                &this.element_path_hash == &other.element_path_hash
+                    && &this.element_id == &other.element_id
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for GlobalElementId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        if let Some(element_id) = &self.0 {
+            state.write_u64(element_id.element_path_hash);
+        }
+    }
+}
+
+impl Debug for GlobalElementId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(self.reversed_element_ids().into_iter().rev())
+            .finish()
+    }
+}
 
 impl Display for GlobalElementId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, element_id) in self.0.iter().enumerate() {
+        for (i, element_id) in self.reversed_element_ids().into_iter().rev().enumerate() {
             if i > 0 {
                 write!(f, ".")?;
             }
@@ -278,6 +350,17 @@ impl Display for GlobalElementId {
         }
         Ok(())
     }
+}
+
+// todo! rename + document
+#[derive(Clone)]
+pub(crate) struct InternalGlobalElementId {
+    pub(crate) parent: GlobalElementId,
+
+    /// todo! document
+    pub(crate) element_path_hash: u64,
+
+    pub(crate) element_id: ElementId,
 }
 
 trait ElementObject {
@@ -344,45 +427,38 @@ impl<E: Element> Drawable<E> {
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
-                let global_id = self.element.id().map(|element_id| {
-                    window.element_id_stack.push(element_id);
-                    GlobalElementId(window.element_id_stack.clone())
-                });
+                window.with_optional_global_id(self.element.id(), |global_id, window| {
+                    let inspector_id;
+                    #[cfg(any(feature = "inspector", debug_assertions))]
+                    {
+                        inspector_id = self.element.source_location().map(|source| {
+                            let path = crate::InspectorElementPath {
+                                global_id: window.global_element_id.clone(),
+                                source_location: source,
+                            };
+                            window.build_inspector_element_id(path)
+                        });
+                    }
+                    #[cfg(not(any(feature = "inspector", debug_assertions)))]
+                    {
+                        inspector_id = None;
+                    }
 
-                let inspector_id;
-                #[cfg(any(feature = "inspector", debug_assertions))]
-                {
-                    inspector_id = self.element.source_location().map(|source| {
-                        let path = crate::InspectorElementPath {
-                            global_id: GlobalElementId(window.element_id_stack.clone()),
-                            source_location: source,
-                        };
-                        window.build_inspector_element_id(path)
-                    });
-                }
-                #[cfg(not(any(feature = "inspector", debug_assertions)))]
-                {
-                    inspector_id = None;
-                }
+                    let (layout_id, request_layout) = self.element.request_layout(
+                        global_id.as_ref(),
+                        inspector_id.as_ref(),
+                        window,
+                        cx,
+                    );
 
-                let (layout_id, request_layout) = self.element.request_layout(
-                    global_id.as_ref(),
-                    inspector_id.as_ref(),
-                    window,
-                    cx,
-                );
-
-                if global_id.is_some() {
-                    window.element_id_stack.pop();
-                }
-
-                self.phase = ElementDrawPhase::RequestLayout {
-                    layout_id,
-                    global_id,
-                    inspector_id,
-                    request_layout,
-                };
-                layout_id
+                    self.phase = ElementDrawPhase::RequestLayout {
+                        layout_id,
+                        global_id,
+                        inspector_id,
+                        request_layout,
+                    };
+                    layout_id
+                })
             }
             _ => panic!("must call request_layout only once"),
         }
@@ -402,11 +478,8 @@ impl<E: Element> Drawable<E> {
                 inspector_id,
                 mut request_layout,
                 ..
-            } => {
-                if let Some(element_id) = self.element.id() {
-                    window.element_id_stack.push(element_id);
-                    debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
-                }
+            } => window.with_optional_global_id(self.element.id(), |same_global_id, window| {
+                debug_assert_eq!(global_id, same_global_id);
 
                 let bounds = window.layout_bounds(layout_id);
                 let node_id = window.next_frame.dispatch_tree.push_node();
@@ -420,10 +493,6 @@ impl<E: Element> Drawable<E> {
                 );
                 window.next_frame.dispatch_tree.pop_node();
 
-                if global_id.is_some() {
-                    window.element_id_stack.pop();
-                }
-
                 self.phase = ElementDrawPhase::Prepaint {
                     node_id,
                     global_id,
@@ -432,7 +501,7 @@ impl<E: Element> Drawable<E> {
                     request_layout,
                     prepaint,
                 };
-            }
+            }),
             _ => panic!("must call request_layout before prepaint"),
         }
     }
@@ -451,11 +520,8 @@ impl<E: Element> Drawable<E> {
                 mut request_layout,
                 mut prepaint,
                 ..
-            } => {
-                if let Some(element_id) = self.element.id() {
-                    window.element_id_stack.push(element_id);
-                    debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
-                }
+            } => window.with_optional_global_id(self.element.id(), |same_global_id, window| {
+                debug_assert_eq!(global_id, same_global_id);
 
                 window.next_frame.dispatch_tree.set_active_node(node_id);
                 self.element.paint(
@@ -468,13 +534,9 @@ impl<E: Element> Drawable<E> {
                     cx,
                 );
 
-                if global_id.is_some() {
-                    window.element_id_stack.pop();
-                }
-
                 self.phase = ElementDrawPhase::Painted;
                 (request_layout, prepaint)
-            }
+            }),
             _ => panic!("must call prepaint before paint"),
         }
     }
