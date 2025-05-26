@@ -41,7 +41,9 @@ pub(crate) use smallvec::SmallVec;
 use std::{
     any::Any,
     fmt::{self, Debug, Display},
+    hash::{Hash, Hasher},
     mem, panic,
+    rc::Rc,
 };
 
 /// Implemented by types that participate in laying out and painting the contents of a window.
@@ -265,8 +267,76 @@ impl<C: RenderOnce> IntoElement for Component<C> {
 }
 
 /// A globally unique identifier for an element, used to track state across frames.
-#[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
+#[derive(Clone)]
+pub struct GlobalElementId(pub(crate) Option<Rc<InternalGlobalElementId>>);
+
+impl GlobalElementId {
+    #[cfg(not(any(feature = "inspector", debug_assertions)))]
+    fn add(&self, element_id: ElementId) -> GlobalElementId {
+        use collections::FxHasher;
+
+        let mut hasher = FxHasher::default();
+        hasher.write_u64(self.element_path_hash);
+        parent.hash(&mut hasher);
+        let element_path_hash = hasher.finish();
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        hasher.GlobalElementId(Some(Rc::new(InternalGlobalElementId {
+            parent,
+            element_path_hash,
+            #[cfg(not(any(feature = "inspector", debug_assertions)))]
+            element_id,
+            #[cfg(any(feature = "inspector", debug_assertions))]
+            element_id: Some(element_id),
+            #[cfg(any(feature = "inspector", debug_assertions))]
+            location_and_instance_id: None,
+        })))
+    }
+}
+
+impl Eq for GlobalElementId {}
+
+impl PartialEq for GlobalElementId {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0.as_ref(), &other.0.as_ref()) {
+            (Some(this), Some(other)) => {
+                // Theoretically this could produce false positives, but in practice it's pretty
+                // much impossible. Comparing the hashes alone has extremely rare false positives.
+                &this.element_path_hash == &other.element_path_hash
+                    && &this.element_id == &other.element_id
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for GlobalElementId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        if let Some(element_id) = &self.0 {
+            state.write_u64(element_id.element_path_hash);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct InternalGlobalElementId {
+    pub(crate) parent: GlobalElementId,
+
+    /// todo! document
+    pub(crate) element_path_hash: u64,
+
+    #[cfg(not(any(feature = "inspector", debug_assertions)))]
+    pub(crate) element_id: ElementId,
+
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub(crate) element_id: Option<ElementId>,
+
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub(crate) location_and_instance_id: Option<(&'static std::panic::Location<'static>, usize)>,
+}
+
+/* todo!
+impl Debug for GlobalElementId {}
 
 impl Display for GlobalElementId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -279,6 +349,7 @@ impl Display for GlobalElementId {
         Ok(())
     }
 }
+*/
 
 trait ElementObject {
     fn inner_element(&mut self) -> &mut dyn Any;
