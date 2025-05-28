@@ -195,6 +195,7 @@ message LspExtGoToParentModuleResponse {
 message GetCompletionsResponse {
     repeated Completion completions = 1;
     repeated VectorClockEntry version = 2;
+    bool is_incomplete = 3;
 }
 
 message ApplyCompletionAdditionalEdits {

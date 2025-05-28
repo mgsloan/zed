@@ -1,7 +1,8 @@
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    AnyElement, Entity, Focusable, FontWeight, ListSizingBehavior, ScrollStrategy, SharedString,
-    Size, StrikethroughStyle, StyledText, UniformListScrollHandle, div, px, uniform_list,
+    AnyElement, BackgroundExecutor, Entity, Focusable, FontWeight, ListSizingBehavior,
+    ScrollStrategy, SharedString, Size, StrikethroughStyle, StyledText, UniformListScrollHandle,
+    div, px, uniform_list,
 };
 use gpui::{AsyncWindowContext, WeakEntity};
 use itertools::Itertools;
@@ -197,16 +198,18 @@ pub enum ContextMenuOrigin {
     QuickActionBar,
 }
 
-#[derive(Clone)]
 pub struct CompletionsMenu {
     pub id: CompletionId,
     sort_completions: bool,
     pub initial_position: Anchor,
+    pub initial_query: Option<String>,
+    pub completions_incomplete: bool,
     pub buffer: Entity<Buffer>,
     pub completions: Rc<RefCell<Box<[Completion]>>>,
     match_candidates: Rc<[StringMatchCandidate]>,
     pub entries: Rc<RefCell<Vec<StringMatch>>>,
     pub selected_item: usize,
+    pub is_incomplete: bool,
     scroll_handle: UniformListScrollHandle,
     resolve_completions: bool,
     show_completion_documentation: bool,
@@ -225,6 +228,8 @@ impl CompletionsMenu {
         show_completion_documentation: bool,
         ignore_completion_provider: bool,
         initial_position: Anchor,
+        initial_query: Option<String>,
+        completions_incomplete: bool,
         buffer: Entity<Buffer>,
         completions: Box<[Completion]>,
         snippet_sort_order: SnippetSortOrder,
@@ -242,6 +247,8 @@ impl CompletionsMenu {
             id,
             sort_completions,
             initial_position,
+            initial_query,
+            completions_incomplete,
             buffer,
             show_completion_documentation,
             ignore_completion_provider,
@@ -249,6 +256,7 @@ impl CompletionsMenu {
             match_candidates,
             entries: RefCell::new(Vec::new()).into(),
             selected_item: 0,
+            is_incomplete: false,
             scroll_handle: UniformListScrollHandle::new(),
             resolve_completions: true,
             last_rendered_range: RefCell::new(None).into(),
@@ -308,11 +316,14 @@ impl CompletionsMenu {
             id,
             sort_completions,
             initial_position: selection.start,
+            initial_query: None,
+            completions_incomplete: false,
             buffer,
             completions: RefCell::new(completions).into(),
             match_candidates,
             entries: RefCell::new(entries).into(),
             selected_item: 0,
+            is_incomplete: false,
             scroll_handle: UniformListScrollHandle::new(),
             resolve_completions: false,
             show_completion_documentation: false,
@@ -444,6 +455,19 @@ impl CompletionsMenu {
             return;
         };
 
+        let entries = self.entries.borrow();
+        if entries.is_empty() {
+            return;
+        }
+        if self.selected_item >= entries.len() {
+            log::error!(
+                "bug: completion selected_item >= entries.len(): {} >= {}",
+                self.selected_item,
+                entries.len()
+            );
+            self.selected_item = entries.len() - 1;
+        }
+
         // Attempt to resolve completions for every item that will be displayed. This matters
         // because single line documentation may be displayed inline with the completion.
         //
@@ -455,7 +479,6 @@ impl CompletionsMenu {
         let visible_count = last_rendered_range
             .clone()
             .map_or(APPROXIMATE_VISIBLE_COUNT, |range| range.count());
-        let entries = self.entries.borrow();
         let entry_range = if self.selected_item == 0 {
             0..min(visible_count, entries.len())
         } else if self.selected_item == entries.len() - 1 {
@@ -508,11 +531,11 @@ impl CompletionsMenu {
                     .update(cx, |editor, cx| {
                         // `resolve_completions` modified state affecting display.
                         cx.notify();
-                        editor.with_completions_menu_matching_id(
-                            completion_id,
-                            || (),
-                            |this| this.start_markdown_parse_for_nearby_entries(cx),
-                        );
+                        editor.with_completions_menu_matching_id(completion_id, |menu| {
+                            if let Some(menu) = menu {
+                                menu.start_markdown_parse_for_nearby_entries(cx)
+                            }
+                        });
                     })
                     .ok();
             }
@@ -920,13 +943,7 @@ impl CompletionsMenu {
         });
     }
 
-    pub async fn filter(
-        &mut self,
-        query: Option<&str>,
-        provider: Option<Rc<dyn CompletionProvider>>,
-        editor: WeakEntity<Editor>,
-        cx: &mut AsyncWindowContext,
-    ) {
+    pub async fn filter(&mut self, query: Option<&str>, background_executor: &BackgroundExecutor) {
         let mut matches = if let Some(query) = query {
             fuzzy::match_strings(
                 &self.match_candidates,
@@ -934,7 +951,7 @@ impl CompletionsMenu {
                 query.chars().any(|c| c.is_uppercase()),
                 100,
                 &Default::default(),
-                cx.background_executor().clone(),
+                background_executor.clone(),
             )
             .await
         } else {
@@ -1002,7 +1019,7 @@ impl CompletionsMenu {
                 // another opened. `provider.selection_changed` should not be called in this case.
                 let this_menu_still_active = editor
                     .read_with(cx, |editor, _cx| {
-                        editor.with_completions_menu_matching_id(self.id, || false, |_| true)
+                        editor.with_completions_menu_matching_id(self.id, |menu| menu.is_some())
                     })
                     .unwrap_or(false);
                 if this_menu_still_active {
