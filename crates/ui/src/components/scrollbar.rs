@@ -226,6 +226,7 @@ impl Element for Scrollbar {
         _: &mut App,
     ) -> Self::PrepaintState {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            // TODO: maybe this should occlude?
             window.insert_hitbox(bounds, HitboxFlags::empty())
         })
     }
