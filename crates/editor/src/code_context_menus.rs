@@ -1,23 +1,24 @@
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    AnyElement, BackgroundExecutor, Entity, Focusable, FontWeight, ListSizingBehavior,
-    ScrollStrategy, SharedString, Size, StrikethroughStyle, StyledText, UniformListScrollHandle,
-    div, px, uniform_list,
+    AnyElement, BackgroundExecutor, Empty, Entity, Focusable, FontWeight, ListSizingBehavior,
+    ScrollStrategy, SharedString, Size, StrikethroughStyle, StyledText, Task,
+    UniformListScrollHandle, div, px, uniform_list,
 };
-use gpui::{AsyncWindowContext, WeakEntity};
 use itertools::Itertools;
-use language::CodeLabel;
-use language::{Buffer, LanguageName, LanguageRegistry};
+use language::language_settings::WordsCompletionMode;
+use language::{
+    Buffer, CodeLabel, LanguageName, LanguageRegistry, language_settings::language_settings,
+};
+use language::{BufferSnapshot, CharKind, WordsQuery};
+use lsp::{CompletionContext, CompletionTriggerKind, InsertTextMode};
 use markdown::{Markdown, MarkdownElement};
 use multi_buffer::{Anchor, ExcerptId};
 use ordered_float::OrderedFloat;
-use project::CompletionSource;
-use project::lsp_store::CompletionDocumentation;
-use project::{CodeAction, Completion, TaskSourceKind};
-use task::DebugScenario;
-use task::TaskContext;
-
-use std::collections::VecDeque;
+use project::{
+    CodeAction, Completion, CompletionSource, TaskSourceKind, lsp_store::CompletionDocumentation,
+};
+use settings::Settings as _;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::{
     cell::RefCell,
@@ -26,19 +27,22 @@ use std::{
     ops::Range,
     rc::Rc,
 };
+use task::DebugScenario;
 use task::ResolvedTask;
+use task::TaskContext;
+use text::{Bias, Point, ToOffset as _};
 use ui::{Color, IntoElement, ListItem, Pixels, Popover, Styled, prelude::*};
 use util::ResultExt;
 
-use crate::CodeActionSource;
 use crate::editor_settings::SnippetSortOrder;
 use crate::hover_popover::{hover_markdown_style, open_markdown_url};
 use crate::{
-    CodeActionProvider, CompletionId, CompletionItemKind, CompletionProvider, DisplayRow, Editor,
-    EditorStyle, ResolvedTasks,
+    CodeActionProvider, CompletionItemKind, CompletionProvider, DisplayRow, Editor, EditorStyle,
+    ResolvedTasks,
     actions::{ConfirmCodeAction, ConfirmCompletion},
     split_words, styled_runs_for_code_label,
 };
+use crate::{CodeActionSource, EditorSettings};
 
 pub const MENU_GAP: Pixels = px(4.);
 pub const MENU_ASIDE_X_PADDING: Pixels = px(16.);
@@ -65,73 +69,55 @@ const RESOLVE_BEFORE_ITEMS: usize = 4;
 const RESOLVE_AFTER_ITEMS: usize = 4;
 
 pub enum CodeContextMenu {
-    Completions(CompletionsMenu),
+    Completions(CompletionMenu),
     CodeActions(CodeActionsMenu),
 }
 
+pub enum MenuSelectionChange {
+    First,
+    Last,
+    Prev,
+    Next,
+}
+
+impl MenuSelectionChange {
+    fn flip(self) -> MenuSelectionChange {
+        match self {
+            Self::First => Self::Last,
+            Self::Last => Self::First,
+            Self::Prev => Self::Next,
+            Self::Next => Self::Prev,
+        }
+    }
+
+    fn new_selection(self, index: usize, length: usize) -> usize {
+        match self {
+            Self::First => 0,
+            Self::Last => length.saturating_sub(1),
+            Self::Prev if index == 0 => length.saturating_sub(1),
+            Self::Next if index + 1 >= length => 0,
+            Self::Prev => index - 1,
+            Self::Next => index + 1,
+        }
+    }
+}
+
 impl CodeContextMenu {
-    pub fn select_first(
+    pub fn change_selection(
         &mut self,
+        change: MenuSelectionChange,
         provider: Option<&dyn CompletionProvider>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) -> bool {
         if self.visible() {
             match self {
-                CodeContextMenu::Completions(menu) => menu.select_first(provider, window, cx),
-                CodeContextMenu::CodeActions(menu) => menu.select_first(cx),
+                CodeContextMenu::Completions(menu) => {
+                    menu.change_selection(change, provider, window, cx)
+                }
+                CodeContextMenu::CodeActions(menu) => menu.change_selection(change, cx),
             }
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn select_prev(
-        &mut self,
-        provider: Option<&dyn CompletionProvider>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) -> bool {
-        if self.visible() {
-            match self {
-                CodeContextMenu::Completions(menu) => menu.select_prev(provider, window, cx),
-                CodeContextMenu::CodeActions(menu) => menu.select_prev(cx),
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn select_next(
-        &mut self,
-        provider: Option<&dyn CompletionProvider>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) -> bool {
-        if self.visible() {
-            match self {
-                CodeContextMenu::Completions(menu) => menu.select_next(provider, window, cx),
-                CodeContextMenu::CodeActions(menu) => menu.select_next(cx),
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn select_last(
-        &mut self,
-        provider: Option<&dyn CompletionProvider>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) -> bool {
-        if self.visible() {
-            match self {
-                CodeContextMenu::Completions(menu) => menu.select_last(provider, window, cx),
-                CodeContextMenu::CodeActions(menu) => menu.select_last(cx),
-            }
+            // todo! return bool from impls?
             true
         } else {
             false
@@ -182,6 +168,9 @@ impl CodeContextMenu {
     }
 
     pub fn focused(&self, window: &mut Window, cx: &mut Context<Editor>) -> bool {
+        // todo!
+        false
+        /*
         match self {
             CodeContextMenu::Completions(completions_menu) => completions_menu
                 .get_or_create_entry_markdown(completions_menu.selected_item, cx)
@@ -189,6 +178,7 @@ impl CodeContextMenu {
                 .is_some_and(|markdown| markdown.focus_handle(cx).contains_focused(window, cx)),
             CodeContextMenu::CodeActions(_) => false,
         }
+        */
     }
 }
 
@@ -198,87 +188,95 @@ pub enum ContextMenuOrigin {
     QuickActionBar,
 }
 
-pub struct CompletionsMenu {
-    pub id: CompletionId,
-    sort_completions: bool,
-    pub initial_position: Anchor,
-    pub initial_query: Option<String>,
-    pub completions_incomplete: bool,
-    pub buffer: Entity<Buffer>,
-    pub completions: Rc<RefCell<Box<[Completion]>>>,
-    match_candidates: Rc<[StringMatchCandidate]>,
-    pub entries: Rc<RefCell<Vec<StringMatch>>>,
-    pub selected_item: usize,
-    pub is_incomplete: bool,
-    scroll_handle: UniformListScrollHandle,
-    resolve_completions: bool,
-    show_completion_documentation: bool,
-    pub(super) ignore_completion_provider: bool,
-    last_rendered_range: Rc<RefCell<Option<Range<usize>>>>,
-    markdown_cache: Rc<RefCell<VecDeque<(usize, Entity<Markdown>)>>>,
-    language_registry: Option<Arc<LanguageRegistry>>,
-    language: Option<LanguageName>,
-    snippet_sort_order: SnippetSortOrder,
+pub struct CompletionMenu {
+    position: Anchor,
+    buffer: Entity<Buffer>,
+    // todo! does it need to be Rc RefCell?
+    contents: Option<Rc<RefCell<CompletionMenuContents>>>,
+    tasks: Vec<CompletionTask>,
 }
 
-impl CompletionsMenu {
-    pub fn new(
-        id: CompletionId,
-        sort_completions: bool,
-        show_completion_documentation: bool,
-        ignore_completion_provider: bool,
-        initial_position: Anchor,
-        initial_query: Option<String>,
-        completions_incomplete: bool,
-        buffer: Entity<Buffer>,
-        completions: Box<[Completion]>,
-        snippet_sort_order: SnippetSortOrder,
-        language_registry: Option<Arc<LanguageRegistry>>,
+pub struct CompletionTask {
+    query: Option<String>,
+    task: Task<()>,
+}
+
+// todo! rename
+pub struct QueriedCompletions {
+    /// Fetched completions. This will stay the same length, but uses `RefCell` when resolving more
+    /// information (typically documentation) from the provider.
+    completions: Rc<RefCell<Box<[Completion]>>>,
+    /// Query that was used when populating.
+    query: Option<String>,
+    /// Whether `completions` is incomplete and so should be refetched instead of filtering.
+    is_incomplete: bool,
+}
+
+pub struct CompletionMenuConfiguration {
+    pub sort_completions: bool,
+    pub resolve_completions: bool,
+    pub show_completion_documentation: bool,
+    pub ignore_completion_provider: bool,
+    pub snippet_sort_order: SnippetSortOrder,
+}
+
+pub struct CompletionMenuContents {
+    queried_completions: QueriedCompletions,
+    /// todo! doc
+    language: Option<LanguageName>,
+    /// todo! doc
+    language_registry: Option<Arc<LanguageRegistry>>,
+    /// Match candidates for entry filtering. Immutable and uses the same indices as `completions`.
+    match_candidates: Rc<[StringMatchCandidate]>,
+    /// Completion entries filtered / sorted for display. `StringMatch::candidate_id` is an index
+    /// into `completions` / `match_candidates`.
+    ///
+    /// todo! does it still need to be rc refcell?
+    entries: Rc<RefCell<Vec<StringMatch>>>,
+    /// Index into `entries` for the item currently selected by the user.
+    selected_item: usize,
+    /// Index range in `entries` that was last rendered. Used for resolving visible completions in
+    /// case this affects the display of inline docs.
+    last_rendered_range: Rc<RefCell<Option<Range<usize>>>>,
+    /// todo! document. Move?
+    scroll_handle: UniformListScrollHandle,
+    /// Cache of parsed documentation markdown. The `usize` is an index into `completions`.
+    markdown_cache: Rc<RefCell<VecDeque<(usize, Entity<Markdown>)>>>,
+}
+
+impl CompletionMenuContents {
+    pub fn new_completions(
+        queried_completions: QueriedCompletions,
         language: Option<LanguageName>,
-        cx: &mut Context<Editor>,
+        language_registry: Option<Arc<LanguageRegistry>>,
     ) -> Self {
-        let match_candidates = completions
+        let match_candidates = queried_completions
+            .completions
+            .borrow()
             .iter()
             .enumerate()
             .map(|(id, completion)| StringMatchCandidate::new(id, &completion.label.filter_text()))
             .collect();
 
-        let completions_menu = Self {
-            id,
-            sort_completions,
-            initial_position,
-            initial_query,
-            completions_incomplete,
-            buffer,
-            show_completion_documentation,
-            ignore_completion_provider,
-            completions: RefCell::new(completions).into(),
+        let this = CompletionMenuContents {
+            queried_completions,
+            language,
+            language_registry,
             match_candidates,
             entries: RefCell::new(Vec::new()).into(),
             selected_item: 0,
-            is_incomplete: false,
-            scroll_handle: UniformListScrollHandle::new(),
-            resolve_completions: true,
             last_rendered_range: RefCell::new(None).into(),
+            scroll_handle: UniformListScrollHandle::new(),
             markdown_cache: RefCell::new(VecDeque::with_capacity(MARKDOWN_CACHE_MAX_SIZE)).into(),
-            language_registry,
-            language,
-            snippet_sort_order,
         };
 
-        completions_menu.start_markdown_parse_for_nearby_entries(cx);
+        // todo!
+        // this.start_markdown_parse_for_nearby_entries(cx);
 
-        completions_menu
+        this
     }
 
-    pub fn new_snippet_choices(
-        id: CompletionId,
-        sort_completions: bool,
-        choices: &Vec<String>,
-        selection: Range<Anchor>,
-        buffer: Entity<Buffer>,
-        snippet_sort_order: SnippetSortOrder,
-    ) -> Self {
+    pub fn new_snippets(choices: &Vec<String>, selection: Range<Anchor>) -> Self {
         let completions = choices
             .iter()
             .map(|choice| Completion {
@@ -295,8 +293,7 @@ impl CompletionsMenu {
                 insert_text_mode: None,
                 source: CompletionSource::Custom,
             })
-            .collect();
-
+            .collect::<Box<[_]>>();
         let match_candidates = choices
             .iter()
             .enumerate()
@@ -313,121 +310,605 @@ impl CompletionsMenu {
             })
             .collect::<Vec<_>>();
         Self {
-            id,
-            sort_completions,
-            initial_position: selection.start,
-            initial_query: None,
-            completions_incomplete: false,
-            buffer,
-            completions: RefCell::new(completions).into(),
+            queried_completions: QueriedCompletions {
+                completions: Rc::new(RefCell::new(completions)),
+                query: None,
+                is_incomplete: false,
+            },
+            language: None,
+            language_registry: None,
             match_candidates,
             entries: RefCell::new(entries).into(),
             selected_item: 0,
-            is_incomplete: false,
-            scroll_handle: UniformListScrollHandle::new(),
-            resolve_completions: false,
-            show_completion_documentation: false,
-            ignore_completion_provider: false,
             last_rendered_range: RefCell::new(None).into(),
+            scroll_handle: UniformListScrollHandle::new(),
             markdown_cache: RefCell::new(VecDeque::new()).into(),
-            language_registry: None,
-            language: None,
-            snippet_sort_order,
         }
     }
 
-    fn select_first(
+    fn change_selection(
         &mut self,
+        mut change: MenuSelectionChange,
         provider: Option<&dyn CompletionProvider>,
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
-        let index = if self.scroll_handle.y_flipped() {
-            self.entries.borrow().len() - 1
-        } else {
-            0
-        };
-        self.update_selection_index(index, provider, window, cx);
-    }
-
-    fn select_last(
-        &mut self,
-        provider: Option<&dyn CompletionProvider>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) {
-        let index = if self.scroll_handle.y_flipped() {
-            0
-        } else {
-            self.entries.borrow().len() - 1
-        };
-        self.update_selection_index(index, provider, window, cx);
-    }
-
-    fn select_prev(
-        &mut self,
-        provider: Option<&dyn CompletionProvider>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) {
-        let index = if self.scroll_handle.y_flipped() {
-            self.next_match_index()
-        } else {
-            self.prev_match_index()
-        };
-        self.update_selection_index(index, provider, window, cx);
-    }
-
-    fn select_next(
-        &mut self,
-        provider: Option<&dyn CompletionProvider>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) {
-        let index = if self.scroll_handle.y_flipped() {
-            self.prev_match_index()
-        } else {
-            self.next_match_index()
-        };
-        self.update_selection_index(index, provider, window, cx);
-    }
-
-    fn update_selection_index(
-        &mut self,
-        match_index: usize,
-        provider: Option<&dyn CompletionProvider>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) {
-        if self.selected_item != match_index {
-            self.selected_item = match_index;
+        if self.scroll_handle.y_flipped() {
+            change = change.flip();
+        }
+        let new_selection = change.new_selection(self.selected_item, self.entries.borrow().len());
+        if new_selection != self.selected_item {
+            self.selected_item = new_selection;
             self.scroll_handle
                 .scroll_to_item(self.selected_item, ScrollStrategy::Top);
+            /* todo!
             self.resolve_visible_completions(provider, cx);
             self.start_markdown_parse_for_nearby_entries(cx);
             if let Some(provider) = provider {
                 self.handle_selection_changed(provider, window, cx);
             }
+            */
             cx.notify();
         }
     }
 
-    fn prev_match_index(&self) -> usize {
-        if self.selected_item > 0 {
-            self.selected_item - 1
-        } else {
-            self.entries.borrow().len() - 1
+    fn render(
+        &self,
+        style: &EditorStyle,
+        max_height_in_lines: u32,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) -> AnyElement {
+        let show_completion_documentation = self.show_completion_documentation;
+        let selected_item = self.selected_item;
+        let completions = self.completions.clone();
+        let entries = self.entries.clone();
+        let last_rendered_range = self.last_rendered_range.clone();
+        let style = style.clone();
+        let list = uniform_list(
+            cx.entity().clone(),
+            "completions",
+            self.entries.borrow().len(),
+            move |_editor, range, _window, cx| {
+                last_rendered_range.borrow_mut().replace(range.clone());
+                let start_ix = range.start;
+                let completions_guard = completions.borrow_mut();
+
+                entries.borrow()[range]
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, mat)| {
+                        let item_ix = start_ix + ix;
+                        let completion = &completions_guard[mat.candidate_id];
+                        let documentation = if show_completion_documentation {
+                            &completion.documentation
+                        } else {
+                            &None
+                        };
+
+                        let filter_start = completion.label.filter_range.start;
+                        let highlights = gpui::combine_highlights(
+                            mat.ranges().map(|range| {
+                                (
+                                    filter_start + range.start..filter_start + range.end,
+                                    FontWeight::BOLD.into(),
+                                )
+                            }),
+                            styled_runs_for_code_label(&completion.label, &style.syntax).map(
+                                |(range, mut highlight)| {
+                                    // Ignore font weight for syntax highlighting, as we'll use it
+                                    // for fuzzy matches.
+                                    highlight.font_weight = None;
+                                    if completion
+                                        .source
+                                        .lsp_completion(false)
+                                        .and_then(|lsp_completion| lsp_completion.deprecated)
+                                        .unwrap_or(false)
+                                    {
+                                        highlight.strikethrough = Some(StrikethroughStyle {
+                                            thickness: 1.0.into(),
+                                            ..Default::default()
+                                        });
+                                        highlight.color = Some(cx.theme().colors().text_muted);
+                                    }
+
+                                    (range, highlight)
+                                },
+                            ),
+                        );
+
+                        let completion_label = StyledText::new(completion.label.text.clone())
+                            .with_default_highlights(&style.text, highlights);
+
+                        let documentation_label = match documentation {
+                            Some(CompletionDocumentation::SingleLine(text))
+                            | Some(CompletionDocumentation::SingleLineAndMultiLinePlainText {
+                                single_line: text,
+                                ..
+                            }) => {
+                                if text.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(
+                                        Label::new(text.clone())
+                                            .ml_4()
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                }
+                            }
+                            _ => None,
+                        };
+
+                        let start_slot = completion
+                            .color()
+                            .map(|color| {
+                                div()
+                                    .flex_shrink_0()
+                                    .size_3p5()
+                                    .rounded_xs()
+                                    .bg(color)
+                                    .into_any_element()
+                            })
+                            .or_else(|| {
+                                completion.icon_path.as_ref().map(|path| {
+                                    Icon::from_path(path)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Muted)
+                                        .into_any_element()
+                                })
+                            });
+
+                        div().min_w(px(280.)).max_w(px(540.)).child(
+                            ListItem::new(mat.candidate_id)
+                                .inset(true)
+                                .toggle_state(item_ix == selected_item)
+                                .on_click(cx.listener(move |editor, _event, window, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(task) = editor.confirm_completion(
+                                        &ConfirmCompletion {
+                                            item_ix: Some(item_ix),
+                                        },
+                                        window,
+                                        cx,
+                                    ) {
+                                        task.detach_and_log_err(cx)
+                                    }
+                                }))
+                                .start_slot::<AnyElement>(start_slot)
+                                .child(h_flex().overflow_hidden().child(completion_label))
+                                .end_slot::<Label>(documentation_label),
+                        )
+                    })
+                    .collect()
+            },
+        )
+        .occlude()
+        .max_h(max_height_in_lines as f32 * window.line_height())
+        .track_scroll(self.scroll_handle.clone())
+        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .w(rems(34.));
+
+        Popover::new().child(list).into_any_element()
+    }
+
+    fn render_aside(
+        &mut self,
+        max_size: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) -> Option<AnyElement> {
+        if !self.show_completion_documentation {
+            return None;
+        }
+
+        let mat = &self.entries.borrow()[self.selected_item];
+        let multiline_docs = match self.completions.borrow_mut()[mat.candidate_id]
+            .documentation
+            .as_ref()?
+        {
+            CompletionDocumentation::MultiLinePlainText(text) => div().child(text.clone()),
+            CompletionDocumentation::SingleLineAndMultiLinePlainText {
+                plain_text: Some(text),
+                ..
+            } => div().child(text.clone()),
+            CompletionDocumentation::MultiLineMarkdown(source) if !source.is_empty() => {
+                let (is_parsing, markdown) =
+                    self.get_or_create_markdown(mat.candidate_id, source.clone(), true, cx);
+                if is_parsing {
+                    return None;
+                }
+                div().child(
+                    MarkdownElement::new(markdown, hover_markdown_style(window, cx))
+                        .code_block_renderer(markdown::CodeBlockRenderer::Default {
+                            copy_button: false,
+                            copy_button_on_hover: false,
+                            border: false,
+                        })
+                        .on_url_click(open_markdown_url),
+                )
+            }
+            CompletionDocumentation::MultiLineMarkdown(_) => return None,
+            CompletionDocumentation::SingleLine(_) => return None,
+            CompletionDocumentation::Undocumented => return None,
+            CompletionDocumentation::SingleLineAndMultiLinePlainText {
+                plain_text: None, ..
+            } => {
+                return None;
+            }
+        };
+
+        Some(
+            Popover::new()
+                .child(
+                    multiline_docs
+                        .id("multiline_docs")
+                        .px(MENU_ASIDE_X_PADDING / 2.)
+                        .max_w(max_size.width)
+                        .max_h(max_size.height)
+                        .overflow_y_scroll()
+                        .occlude(),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+impl CompletionMenu {
+    pub fn new(position: Anchor, buffer: Entity<Buffer>) -> Self {
+        Self {
+            position,
+            buffer,
+            contents: None,
+            tasks: Vec::new(),
         }
     }
 
-    fn next_match_index(&self) -> usize {
-        if self.selected_item + 1 < self.entries.borrow().len() {
-            self.selected_item + 1
-        } else {
-            0
+    fn change_selection(
+        &mut self,
+        change: MenuSelectionChange,
+        provider: Option<&dyn CompletionProvider>,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) {
+        if let Some(contents) = &self.contents {
+            contents
+                .borrow_mut()
+                .change_selection(change, provider, window, cx);
         }
     }
 
+    pub fn visible(&self) -> bool {
+        if let Some(contents) = &self.contents {
+            !contents.borrow().entries.borrow().is_empty()
+        } else {
+            false
+        }
+    }
+
+    fn origin(&self) -> ContextMenuOrigin {
+        ContextMenuOrigin::Cursor
+    }
+
+    fn render(
+        &self,
+        style: &EditorStyle,
+        max_height_in_lines: u32,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) -> AnyElement {
+        if let Some(contents) = &self.contents {
+            contents
+                .borrow()
+                .render(style, max_height_in_lines, window, cx)
+        } else {
+            Empty.into_any_element()
+        }
+    }
+
+    fn render_aside(
+        &mut self,
+        max_size: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) -> Option<AnyElement> {
+        if let Some(contents) = &self.contents {
+            contents.borrow_mut().render_aside(max_size, window, cx)
+        } else {
+            None
+        }
+    }
+
+    pub fn query_completions(
+        &mut self,
+        editor: &Editor,
+        cursor_position: Anchor,
+        trigger: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) -> bool {
+        if cursor_position.buffer_id != self.position.buffer_id {
+            return false;
+        }
+        let buffer = self.buffer.read(cx);
+        let buffer_snapshot = buffer.snapshot();
+        let cursor_offset = cursor_position.text_anchor.to_offset(&buffer_snapshot);
+        if cursor_position != self.position {
+            if cursor_offset != self.position.text_anchor.to_offset(&buffer_snapshot) {
+                return false;
+            }
+        }
+        let excerpt_id = cursor_position.excerpt_id;
+        let cursor_position = cursor_position.text_anchor;
+
+        let (word_range, kind) = buffer_snapshot.surrounding_word(cursor_offset, true);
+        let query = if cursor_offset > word_range.start && kind == Some(CharKind::Word) {
+            Some(
+                buffer_snapshot
+                    .text_for_range(word_range.start..cursor_offset)
+                    .collect::<String>(),
+            )
+        } else {
+            None
+        };
+
+        /* todo!
+        let provider = if only_word_completions {
+            None
+        } else {
+            self.completion_provider.clone()
+        };
+        */
+
+        let provider = editor.completion_provider();
+
+        let sort_completions = provider
+            .as_ref()
+            .map_or(false, |provider| provider.sort_completions());
+
+        let filter_completions = provider
+            .as_ref()
+            .map_or(true, |provider| provider.filter_completions());
+
+        if let Some(contents) = self.contents {
+            let contents = contents.borrow_mut();
+            let can_filter = if !contents.queried_completions.is_incomplete && filter_completions {
+                // If the new query is a suffix of the old query (typing more characters) and
+                // the previous result was complete, the existing completions can be filtered.
+                match (&contents.queried_completions.query, &query) {
+                    (Some(initial_query), Some(query)) => query.starts_with(initial_query),
+                    // Also valid to re-use the "no query" case.
+                    //
+                    // todo! actually true?
+                    (None, _) => true,
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if can_filter {
+                // todo!
+                return true;
+            }
+        }
+
+        let trigger_kind = match trigger {
+            Some(trigger) if buffer.completion_triggers().contains(trigger) => {
+                CompletionTriggerKind::TRIGGER_CHARACTER
+            }
+            _ => CompletionTriggerKind::INVOKED,
+        };
+        let completion_context = CompletionContext {
+            trigger_character: trigger.and_then(|trigger| {
+                if trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER {
+                    Some(String::from(trigger))
+                } else {
+                    None
+                }
+            }),
+            trigger_kind,
+        };
+
+        // todo! should for_completion actually be true?!?
+        let (replace_range, word_kind) = buffer_snapshot.surrounding_word(cursor_offset, false);
+        let (replace_range, word_to_exclude) = if word_kind == Some(CharKind::Word) {
+            let word_to_exclude = buffer_snapshot
+                .text_for_range(replace_range.clone())
+                .collect::<String>();
+            (
+                buffer_snapshot.anchor_before(replace_range.start)
+                    ..buffer_snapshot.anchor_after(replace_range.end),
+                Some(word_to_exclude),
+            )
+        } else {
+            (cursor_position..cursor_position, None)
+        };
+
+        let language_registry = editor
+            .workspace
+            .as_ref()
+            .and_then(|(workspace, _)| workspace.upgrade())
+            .map(|workspace| workspace.read(cx).app_state().languages.clone());
+
+        let language = buffer_snapshot
+            .language_at(cursor_position)
+            .map(|language| language.name());
+
+        let completion_settings =
+            language_settings(language.clone(), buffer_snapshot.file(), cx).completions;
+
+        let show_completion_documentation = buffer_snapshot
+            .settings_at(cursor_position, cx)
+            .show_completion_documentation;
+
+        let snippet_sort_order = EditorSettings::get_global(cx).snippet_sort_order;
+
+        let (provider_task, mut words_task) = match &provider {
+            Some(provider) => {
+                let provider_task = provider.completions(
+                    excerpt_id,
+                    &self.buffer,
+                    cursor_position,
+                    completion_context,
+                    window,
+                    cx,
+                );
+
+                let words_task = match completion_settings.words {
+                    WordsCompletionMode::Disabled => Task::ready(BTreeMap::default()),
+                    WordsCompletionMode::Enabled | WordsCompletionMode::Fallback => {
+                        Self::query_word_completions(
+                            query.as_ref(),
+                            &cursor_position,
+                            buffer_snapshot,
+                            cx,
+                        )
+                    }
+                };
+
+                (provider_task, words_task)
+            }
+            None => {
+                // todo! shouldn't this respect WordsCompletionMode::Disabled?
+                let provider_task = Task::ready(Ok(Vec::new()));
+                let words_task = Self::query_word_completions(
+                    query.as_ref(),
+                    &cursor_position,
+                    buffer_snapshot,
+                    cx,
+                );
+                (provider_task, words_task)
+            }
+        };
+
+        let task = cx.spawn_in(window, async move |editor, cx| {
+            // todo! Ideally would selectively refresh completions instead of treating them all as
+            // incomplete if one source is incomplete.
+            let mut completions = Vec::new();
+            let mut is_incomplete = false;
+            if let Some(provider_responses) = provider_task.await.log_err() {
+                if !provider_responses.is_empty() {
+                    for response in provider_responses {
+                        completions.extend(response.completions);
+                        is_incomplete = is_incomplete || response.is_incomplete;
+                    }
+                    if completion_settings.words == WordsCompletionMode::Fallback {
+                        words_task = Task::ready(BTreeMap::default());
+                    }
+                }
+            }
+
+            let mut words = words_task.await;
+            if let Some(word_to_exclude) = &word_to_exclude {
+                words.remove(word_to_exclude);
+            }
+            for lsp_completion in &completions {
+                words.remove(&lsp_completion.new_text);
+            }
+            completions.extend(words.into_iter().map(|(word, word_range)| Completion {
+                replace_range: replace_range.clone(),
+                new_text: word.clone(),
+                label: CodeLabel::plain(word, None),
+                icon_path: None,
+                documentation: None,
+                source: CompletionSource::BufferWord {
+                    word_range,
+                    resolved: false,
+                },
+                insert_text_mode: Some(InsertTextMode::AS_IS),
+                confirm: None,
+            }));
+
+            /* todo!
+            menu.filter(
+                if filter_completions {
+                    query.as_deref()
+                } else {
+                    None
+                },
+                cx.background_executor(),
+            )
+            .await;
+            */
+
+            if completions.is_empty() {
+                self.contents = None;
+            } else {
+                let queried_completions = QueriedCompletions {
+                    completions: Rc::new(RefCell::new(completions.into_boxed_slice())),
+                    query,
+                    is_incomplete,
+                };
+                let contents = CompletionMenuContents::new_completions(
+                    queried_completions,
+                    language,
+                    language_registry,
+                );
+                self.contents = Some(Rc::new(RefCell::new(contents)));
+            }
+            // todo! also call when filtering?
+            editor.update_in(cx, |editor, window, cx| {
+                editor.handle_completions_menu_updated(window, cx);
+            });
+        });
+
+        self.tasks.clear();
+
+        /* todo!
+        // Keep completion tasks which could provide the completions needed for the current query if
+        // `is_incomplete == false`.
+        self.tasks.retain(|completion_task| match (&query, &completion_task.query) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(query), Some(task_query)) => query.starts_with(task_query),
+        });
+        */
+
+        self.tasks.push(CompletionTask { query, task });
+
+        true
+    }
+
+    // todo! Do this after every entries change
+    // menu.resolve_visible_completions(self.completion_provider.as_deref(), cx);
+
+    fn query_word_completions(
+        query: Option<&str>,
+        cursor_position: &text::Anchor,
+        buffer_snapshot: BufferSnapshot,
+        cx: &App,
+    ) -> Task<BTreeMap<String, Range<text::Anchor>>> {
+        // The document can be large, so stay in reasonable bounds when searching for words,
+        // otherwise completion pop-up might be slow to appear.
+        const WORD_LOOKUP_ROWS: u32 = 5_000;
+        let buffer_row = text::ToPoint::to_point(cursor_position, &buffer_snapshot).row;
+        let min_word_search = buffer_snapshot.clip_point(
+            Point::new(buffer_row.saturating_sub(WORD_LOOKUP_ROWS), 0),
+            Bias::Left,
+        );
+        let max_word_search = buffer_snapshot.clip_point(
+            Point::new(buffer_row + WORD_LOOKUP_ROWS, 0).min(buffer_snapshot.max_point()),
+            Bias::Right,
+        );
+        let word_search_range = buffer_snapshot.point_to_offset(min_word_search)
+            ..buffer_snapshot.point_to_offset(max_word_search);
+
+        let skip_digits = query.map_or(true, |query| !query.chars().any(|c| c.is_digit(10)));
+
+        cx.background_spawn(async move {
+            buffer_snapshot.words_in_range(WordsQuery {
+                fuzzy_contents: None,
+                range: word_search_range,
+                skip_digits,
+            })
+        })
+    }
+}
+
+struct OldImpl;
+
+impl OldImpl {
+    /*
     fn handle_selection_changed(
         &self,
         provider: &dyn CompletionProvider,
@@ -638,215 +1119,6 @@ impl CompletionsMenu {
         }
     }
 
-    pub fn visible(&self) -> bool {
-        !self.entries.borrow().is_empty()
-    }
-
-    fn origin(&self) -> ContextMenuOrigin {
-        ContextMenuOrigin::Cursor
-    }
-
-    fn render(
-        &self,
-        style: &EditorStyle,
-        max_height_in_lines: u32,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) -> AnyElement {
-        let show_completion_documentation = self.show_completion_documentation;
-        let selected_item = self.selected_item;
-        let completions = self.completions.clone();
-        let entries = self.entries.clone();
-        let last_rendered_range = self.last_rendered_range.clone();
-        let style = style.clone();
-        let list = uniform_list(
-            cx.entity().clone(),
-            "completions",
-            self.entries.borrow().len(),
-            move |_editor, range, _window, cx| {
-                last_rendered_range.borrow_mut().replace(range.clone());
-                let start_ix = range.start;
-                let completions_guard = completions.borrow_mut();
-
-                entries.borrow()[range]
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, mat)| {
-                        let item_ix = start_ix + ix;
-                        let completion = &completions_guard[mat.candidate_id];
-                        let documentation = if show_completion_documentation {
-                            &completion.documentation
-                        } else {
-                            &None
-                        };
-
-                        let filter_start = completion.label.filter_range.start;
-                        let highlights = gpui::combine_highlights(
-                            mat.ranges().map(|range| {
-                                (
-                                    filter_start + range.start..filter_start + range.end,
-                                    FontWeight::BOLD.into(),
-                                )
-                            }),
-                            styled_runs_for_code_label(&completion.label, &style.syntax).map(
-                                |(range, mut highlight)| {
-                                    // Ignore font weight for syntax highlighting, as we'll use it
-                                    // for fuzzy matches.
-                                    highlight.font_weight = None;
-                                    if completion
-                                        .source
-                                        .lsp_completion(false)
-                                        .and_then(|lsp_completion| lsp_completion.deprecated)
-                                        .unwrap_or(false)
-                                    {
-                                        highlight.strikethrough = Some(StrikethroughStyle {
-                                            thickness: 1.0.into(),
-                                            ..Default::default()
-                                        });
-                                        highlight.color = Some(cx.theme().colors().text_muted);
-                                    }
-
-                                    (range, highlight)
-                                },
-                            ),
-                        );
-
-                        let completion_label = StyledText::new(completion.label.text.clone())
-                            .with_default_highlights(&style.text, highlights);
-
-                        let documentation_label = match documentation {
-                            Some(CompletionDocumentation::SingleLine(text))
-                            | Some(CompletionDocumentation::SingleLineAndMultiLinePlainText {
-                                single_line: text,
-                                ..
-                            }) => {
-                                if text.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(
-                                        Label::new(text.clone())
-                                            .ml_4()
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted),
-                                    )
-                                }
-                            }
-                            _ => None,
-                        };
-
-                        let start_slot = completion
-                            .color()
-                            .map(|color| {
-                                div()
-                                    .flex_shrink_0()
-                                    .size_3p5()
-                                    .rounded_xs()
-                                    .bg(color)
-                                    .into_any_element()
-                            })
-                            .or_else(|| {
-                                completion.icon_path.as_ref().map(|path| {
-                                    Icon::from_path(path)
-                                        .size(IconSize::XSmall)
-                                        .color(Color::Muted)
-                                        .into_any_element()
-                                })
-                            });
-
-                        div().min_w(px(280.)).max_w(px(540.)).child(
-                            ListItem::new(mat.candidate_id)
-                                .inset(true)
-                                .toggle_state(item_ix == selected_item)
-                                .on_click(cx.listener(move |editor, _event, window, cx| {
-                                    cx.stop_propagation();
-                                    if let Some(task) = editor.confirm_completion(
-                                        &ConfirmCompletion {
-                                            item_ix: Some(item_ix),
-                                        },
-                                        window,
-                                        cx,
-                                    ) {
-                                        task.detach_and_log_err(cx)
-                                    }
-                                }))
-                                .start_slot::<AnyElement>(start_slot)
-                                .child(h_flex().overflow_hidden().child(completion_label))
-                                .end_slot::<Label>(documentation_label),
-                        )
-                    })
-                    .collect()
-            },
-        )
-        .occlude()
-        .max_h(max_height_in_lines as f32 * window.line_height())
-        .track_scroll(self.scroll_handle.clone())
-        .with_sizing_behavior(ListSizingBehavior::Infer)
-        .w(rems(34.));
-
-        Popover::new().child(list).into_any_element()
-    }
-
-    fn render_aside(
-        &mut self,
-        max_size: Size<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) -> Option<AnyElement> {
-        if !self.show_completion_documentation {
-            return None;
-        }
-
-        let mat = &self.entries.borrow()[self.selected_item];
-        let multiline_docs = match self.completions.borrow_mut()[mat.candidate_id]
-            .documentation
-            .as_ref()?
-        {
-            CompletionDocumentation::MultiLinePlainText(text) => div().child(text.clone()),
-            CompletionDocumentation::SingleLineAndMultiLinePlainText {
-                plain_text: Some(text),
-                ..
-            } => div().child(text.clone()),
-            CompletionDocumentation::MultiLineMarkdown(source) if !source.is_empty() => {
-                let (is_parsing, markdown) =
-                    self.get_or_create_markdown(mat.candidate_id, source.clone(), true, cx);
-                if is_parsing {
-                    return None;
-                }
-                div().child(
-                    MarkdownElement::new(markdown, hover_markdown_style(window, cx))
-                        .code_block_renderer(markdown::CodeBlockRenderer::Default {
-                            copy_button: false,
-                            copy_button_on_hover: false,
-                            border: false,
-                        })
-                        .on_url_click(open_markdown_url),
-                )
-            }
-            CompletionDocumentation::MultiLineMarkdown(_) => return None,
-            CompletionDocumentation::SingleLine(_) => return None,
-            CompletionDocumentation::Undocumented => return None,
-            CompletionDocumentation::SingleLineAndMultiLinePlainText {
-                plain_text: None, ..
-            } => {
-                return None;
-            }
-        };
-
-        Some(
-            Popover::new()
-                .child(
-                    multiline_docs
-                        .id("multiline_docs")
-                        .px(MENU_ASIDE_X_PADDING / 2.)
-                        .max_w(max_size.width)
-                        .max_h(max_size.height)
-                        .overflow_y_scroll()
-                        .occlude(),
-                )
-                .into_any_element(),
-        )
-    }
-
     pub fn sort_matches(
         matches: &mut Vec<SortableMatch<'_>>,
         query: Option<&str>,
@@ -1029,6 +1301,7 @@ impl CompletionsMenu {
             .ok();
         }
     }
+    */
 }
 
 #[derive(Debug)]
@@ -1185,63 +1458,16 @@ pub struct CodeActionsMenu {
 }
 
 impl CodeActionsMenu {
-    fn select_first(&mut self, cx: &mut Context<Editor>) {
-        self.selected_item = if self.scroll_handle.y_flipped() {
-            self.actions.len() - 1
-        } else {
-            0
-        };
-        self.scroll_handle
-            .scroll_to_item(self.selected_item, ScrollStrategy::Top);
-        cx.notify()
-    }
-
-    fn select_last(&mut self, cx: &mut Context<Editor>) {
-        self.selected_item = if self.scroll_handle.y_flipped() {
-            0
-        } else {
-            self.actions.len() - 1
-        };
-        self.scroll_handle
-            .scroll_to_item(self.selected_item, ScrollStrategy::Top);
-        cx.notify()
-    }
-
-    fn select_prev(&mut self, cx: &mut Context<Editor>) {
-        self.selected_item = if self.scroll_handle.y_flipped() {
-            self.next_match_index()
-        } else {
-            self.prev_match_index()
-        };
-        self.scroll_handle
-            .scroll_to_item(self.selected_item, ScrollStrategy::Top);
-        cx.notify();
-    }
-
-    fn select_next(&mut self, cx: &mut Context<Editor>) {
-        self.selected_item = if self.scroll_handle.y_flipped() {
-            self.prev_match_index()
-        } else {
-            self.next_match_index()
-        };
-        self.scroll_handle
-            .scroll_to_item(self.selected_item, ScrollStrategy::Top);
-        cx.notify();
-    }
-
-    fn prev_match_index(&self) -> usize {
-        if self.selected_item > 0 {
-            self.selected_item - 1
-        } else {
-            self.actions.len() - 1
+    pub fn change_selection(&mut self, change: MenuSelectionChange, cx: &mut Context<Editor>) {
+        if self.scroll_handle.y_flipped() {
+            change = change.flip();
         }
-    }
-
-    fn next_match_index(&self) -> usize {
-        if self.selected_item + 1 < self.actions.len() {
-            self.selected_item + 1
-        } else {
-            0
+        let new_selection = change.new_selection(self.selected_item, self.actions.len());
+        if new_selection != self.selected_item {
+            self.selected_item = new_selection;
+            self.scroll_handle
+                .scroll_to_item(self.selected_item, ScrollStrategy::Top);
+            cx.notify()
         }
     }
 

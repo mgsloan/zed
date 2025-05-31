@@ -1,5 +1,5 @@
 use crate::{
-    code_context_menus::{CompletionsMenu, SortableMatch},
+    code_context_menus::{CompletionMenu, SortableMatch},
     editor_settings::SnippetSortOrder,
 };
 use fuzzy::StringMatch;

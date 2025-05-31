@@ -83,7 +83,7 @@ use ::git::blame::BlameEntry;
 use ::git::{Restore, blame::ParsedCommitMessage};
 use code_context_menus::{
     AvailableCodeAction, CodeActionContents, CodeActionsItem, CodeActionsMenu, CodeContextMenu,
-    CompletionsMenu, ContextMenuOrigin,
+    CompletionMenu, CompletionsMenu, ContextMenuOrigin,
 };
 use git::blame::{GitBlame, GlobalBlameRenderer};
 use gpui::{
@@ -587,8 +587,6 @@ pub fn make_suggestion_styles(cx: &mut App) -> InlineCompletionStyles {
     }
 }
 
-type CompletionId = usize;
-
 pub(crate) enum EditDisplayMode {
     TabAccept,
     DiffPopover,
@@ -986,12 +984,10 @@ pub struct Editor {
     context_menu: RefCell<Option<CodeContextMenu>>,
     context_menu_options: Option<ContextMenuOptions>,
     mouse_context_menu: Option<MouseContextMenu>,
-    completion_tasks: Vec<(CompletionId, Task<()>)>,
     inline_blame_popover: Option<InlineBlamePopover>,
     signature_help_state: SignatureHelpState,
     auto_signature_help: Option<bool>,
     find_all_references_task_sources: Vec<Anchor>,
-    next_completion_id: CompletionId,
     available_code_actions: Option<(Location, Rc<[AvailableCodeAction]>)>,
     code_actions_task: Option<Task<Result<()>>>,
     quick_selection_highlight_task: Option<(Range<Anchor>, Task<()>)>,
@@ -1848,13 +1844,10 @@ impl Editor {
             context_menu: RefCell::new(None),
             context_menu_options: None,
             mouse_context_menu: None,
-            completion_task: None,
-            completion_tasks: Vec::new(),
             inline_blame_popover: None,
             signature_help_state: SignatureHelpState::default(),
             auto_signature_help: None,
             find_all_references_task_sources: Vec::new(),
-            next_completion_id: 0,
             next_inlay_id: 0,
             code_action_providers,
             available_code_actions: None,
@@ -2442,6 +2435,10 @@ impl Editor {
         ) -> Option<Entity<ui::ContextMenu>>,
     ) {
         self.custom_context_menu = Some(Box::new(f))
+    }
+
+    pub fn completion_provider(&self) -> &Option<Rc<dyn CompletionProvider>> {
+        &self.completion_provider
     }
 
     pub fn set_completion_provider(&mut self, provider: Option<Rc<dyn CompletionProvider>>) {
@@ -4670,20 +4667,6 @@ impl Editor {
         });
     }
 
-    fn completion_query(buffer: &MultiBufferSnapshot, position: impl ToOffset) -> Option<String> {
-        let offset = position.to_offset(buffer);
-        let (word_range, kind) = buffer.surrounding_word(offset, true);
-        if offset > word_range.start && kind == Some(CharKind::Word) {
-            Some(
-                buffer
-                    .text_for_range(word_range.start..offset)
-                    .collect::<String>(),
-            )
-        } else {
-            None
-        }
-    }
-
     pub fn toggle_inline_values(
         &mut self,
         _: &ToggleInlineValues,
@@ -5006,12 +4989,11 @@ impl Editor {
     // completions. It should also store the query that led to them so that it can be checked.
     fn open_completions_menu(
         &mut self,
-        ignore_completion_provider: bool,
+        only_word_completions: bool,
         trigger: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        dbg!("open_completions_menu");
         if self.pending_rename.is_some() {
             return;
         }
@@ -5019,364 +5001,66 @@ impl Editor {
             return;
         }
 
-        // todo! remove
-        let multi_buffer_snapshot_ref = self.buffer.read(cx).read(cx);
-
-        let position = self.selections.newest_anchor().head();
-        if position.diff_base_anchor.is_some() {
+        let cursor_position = self.selections.newest_anchor().head();
+        let Some(buffer_id) = cursor_position.buffer_id else {
+            return;
+        };
+        if cursor_position.diff_base_anchor.is_some() {
             return;
         }
-        let (buffer, buffer_position) =
-            if let Some(output) = self.buffer.read(cx).text_anchor_for_position(position, cx) {
-                output
-            } else {
+
+        let mut context_menu = self.context_menu.borrow_mut();
+        let query_started = match context_menu.as_mut() {
+            Some(CodeContextMenu::Completions(menu)) => {
+                menu.query_completions(self, cursor_position, trigger, window, cx)
+            }
+            _ => false,
+        };
+        if !query_started {
+            let Some(buffer) = self.buffer.read(cx).buffer(buffer_id) else {
                 return;
             };
-        let buffer_snapshot = buffer.read(cx).snapshot();
-
-        let query = Self::completion_query(&multi_buffer_snapshot_ref, position);
-
-        drop(multi_buffer_snapshot_ref);
-
-        let provider = if ignore_completion_provider {
-            None
-        } else {
-            self.completion_provider.clone()
-        };
-
-        let sort_completions = provider
-            .as_ref()
-            .map_or(false, |provider| provider.sort_completions());
-
-        let filter_completions = provider
-            .as_ref()
-            .map_or(true, |provider| provider.filter_completions());
-
-        let can_reuse_menu =
-            if let Some(CodeContextMenu::Completions(menu)) = self.context_menu.borrow().as_ref() {
-                if !menu.is_incomplete && filter_completions {
-                    // If the new query is a suffix of the old query (typing more characters) and
-                    // the previous result was complete, the existing completions can be filtered.
-                    let query_matches = match (&menu.initial_query, &query) {
-                        (Some(menu_query), Some(query)) => dbg!(query.starts_with(menu_query)),
-                        // Also valid to re-use the "no query" case.
-                        //
-                        // todo! actually true?
-                        (None, _) => true,
-                        _ => false,
-                    };
-
-                    /* todo!
-                    if query_matches {
-                        // todo! more efficient way to do this?
-                        //
-                        // Even need to do this?
-                        let multi_buffer_snapshot = self.buffer.read(cx).read(cx);
-                        let (replace_range, _) = multi_buffer_snapshot.surrounding_word(position, true);
-                        replace_range.contains(&menu.initial_position.to_offset(&multi_buffer_snapshot))
-                    } else {
-                        false
-                    }
-                    */
-                    query_matches
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-        if dbg!(can_reuse_menu) {
-            let query = query.clone();
-            self.run_completion_task(window, cx, async move |_, editor, cx| {
-                let editor_handle = editor.clone();
-                let menu = editor
-                    .read_with(cx, |editor, _cx| {
-                        if let Some(CodeContextMenu::Completions(menu)) =
-                            editor.context_menu.borrow().as_ref()
-                        {
-                            // todo! avoid clone
-                            // todo! need to check that it's the same menu.
-                            Some(menu.clone())
-                        } else {
-                            // todo! this case is broken.
-                            None
-                        }
-                    })
-                    .ok()
-                    .flatten();
-
-                if let Some(filter_future) = filter_task {
-                    filter_future.await;
-                }
-
-                editor
-                    .update(cx, |editor, _cx| {
-                        let context_menu = editor.context_menu.borrow_mut().take();
-                        if let Some(CodeContextMenu::Completions(menu)) = context_menu {
-                            Some(menu)
-                        } else {
-                            // todo! this case is broken.
-                            None
-                        }
-                    })
-                    .ok()
-                    .flatten()
-            });
-            return;
+            let mut menu = CompletionMenu::new(cursor_position, buffer);
+            let query_started = menu.query_completions(self, cursor_position, trigger, window, cx);
+            if query_started {
+                *context_menu = Some(CodeContextMenu::Completions(menu));
+            }
         }
-
-        let trigger_kind = match trigger {
-            Some(trigger) if buffer.read(cx).completion_triggers().contains(trigger) => {
-                CompletionTriggerKind::TRIGGER_CHARACTER
-            }
-            _ => CompletionTriggerKind::INVOKED,
-        };
-        let completion_context = CompletionContext {
-            trigger_character: trigger.and_then(|trigger| {
-                if trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER {
-                    Some(String::from(trigger))
-                } else {
-                    None
-                }
-            }),
-            trigger_kind,
-        };
-
-        let (replace_range, word_kind) = buffer_snapshot.surrounding_word(buffer_position);
-        let (replace_range, word_to_exclude) = if word_kind == Some(CharKind::Word) {
-            let word_to_exclude = buffer_snapshot
-                .text_for_range(replace_range.clone())
-                .collect::<String>();
-            (
-                buffer_snapshot.anchor_before(replace_range.start)
-                    ..buffer_snapshot.anchor_after(replace_range.end),
-                Some(word_to_exclude),
-            )
-        } else {
-            (buffer_position..buffer_position, None)
-        };
-
-        let language = buffer_snapshot
-            .language_at(buffer_position)
-            .map(|language| language.name());
-
-        let completion_settings =
-            language_settings(language.clone(), buffer_snapshot.file(), cx).completions;
-
-        let show_completion_documentation = buffer_snapshot
-            .settings_at(buffer_position, cx)
-            .show_completion_documentation;
-
-        // The document can be large, so stay in reasonable bounds when searching for words,
-        // otherwise completion pop-up might be slow to appear.
-        const WORD_LOOKUP_ROWS: u32 = 5_000;
-        let buffer_row = text::ToPoint::to_point(&buffer_position, &buffer_snapshot).row;
-        let min_word_search = buffer_snapshot.clip_point(
-            Point::new(buffer_row.saturating_sub(WORD_LOOKUP_ROWS), 0),
-            Bias::Left,
-        );
-        let max_word_search = buffer_snapshot.clip_point(
-            Point::new(buffer_row + WORD_LOOKUP_ROWS, 0).min(buffer_snapshot.max_point()),
-            Bias::Right,
-        );
-        let word_search_range = buffer_snapshot.point_to_offset(min_word_search)
-            ..buffer_snapshot.point_to_offset(max_word_search);
-
-        let skip_digits = query
-            .as_ref()
-            .map_or(true, |query| !query.chars().any(|c| c.is_digit(10)));
-
-        let (mut words, provider_responses) = match &provider {
-            Some(provider) => {
-                let provider_responses = provider.completions(
-                    position.excerpt_id,
-                    &buffer,
-                    buffer_position,
-                    completion_context,
-                    window,
-                    cx,
-                );
-
-                let words = match completion_settings.words {
-                    WordsCompletionMode::Disabled => Task::ready(BTreeMap::default()),
-                    WordsCompletionMode::Enabled | WordsCompletionMode::Fallback => cx
-                        .background_spawn(async move {
-                            buffer_snapshot.words_in_range(WordsQuery {
-                                fuzzy_contents: None,
-                                range: word_search_range,
-                                skip_digits,
-                            })
-                        }),
-                };
-
-                (words, provider_responses)
-            }
-            None => (
-                cx.background_spawn(async move {
-                    buffer_snapshot.words_in_range(WordsQuery {
-                        fuzzy_contents: None,
-                        range: word_search_range,
-                        skip_digits,
-                    })
-                }),
-                Task::ready(Ok(Vec::new())),
-            ),
-        };
-
-        let snippet_sort_order = EditorSettings::get_global(cx).snippet_sort_order;
-
-        let completion_menu_id = post_inc(&mut self.next_completion_id);
-        let task = cx.spawn_in(window, async move |editor, cx| {
-            // todo! Ideally would selectively refresh completions instead of treating them all as
-            // incomplete if one source is incomplete.
-            let mut completions = Vec::new();
-            let mut completions_incomplete = false;
-            if let Some(provider_responses) = provider_responses.await.log_err() {
-                if !provider_responses.is_empty() {
-                    for response in provider_responses {
-                        completions.extend(response.completions);
-                        completions_incomplete = completions_incomplete || response.is_incomplete;
-                    }
-                    if completion_settings.words == WordsCompletionMode::Fallback {
-                        words = Task::ready(BTreeMap::default());
-                    }
-                }
-            }
-
-            let mut words = words.await;
-            if let Some(word_to_exclude) = &word_to_exclude {
-                words.remove(word_to_exclude);
-            }
-            for lsp_completion in &completions {
-                words.remove(&lsp_completion.new_text);
-            }
-            completions.extend(words.into_iter().map(|(word, word_range)| Completion {
-                replace_range: replace_range.clone(),
-                new_text: word.clone(),
-                label: CodeLabel::plain(word, None),
-                icon_path: None,
-                documentation: None,
-                source: CompletionSource::BufferWord {
-                    word_range,
-                    resolved: false,
-                },
-                insert_text_mode: Some(InsertTextMode::AS_IS),
-                confirm: None,
-            }));
-
-            if completions.is_empty() {
-                None
-            } else {
-                let mut menu = editor
-                    .update(cx, |editor, cx| {
-                        let languages = editor
-                            .workspace
-                            .as_ref()
-                            .and_then(|(workspace, _)| workspace.upgrade())
-                            .map(|workspace| workspace.read(cx).app_state().languages.clone());
-                        CompletionsMenu::new(
-                            completion_menu_id,
-                            sort_completions,
-                            show_completion_documentation,
-                            ignore_completion_provider,
-                            position,
-                            query.clone(),
-                            completions_incomplete,
-                            buffer.clone(),
-                            completions.into(),
-                            snippet_sort_order,
-                            languages,
-                            language,
-                            cx,
-                        )
-                    })
-                    .ok()?;
-
-                menu.filter(
-                    if filter_completions {
-                        query.as_deref()
-                    } else {
-                        None
-                    },
-                    cx.background_executor(),
-                )
-                .await;
-
-                menu.visible().then_some(menu)
-            }
-        });
     }
 
-    fn run_completion_task<AsyncFn>(&mut self, window: &Window, cx: &Context<Self>, f: AsyncFn)
-    where
-        AsyncFn: AsyncFnOnce(
-                CompletionId,
-                WeakEntity<Self>,
-                &mut AsyncWindowContext,
-            ) -> Option<CompletionsMenu>
-            + 'static,
-    {
-        let id = post_inc(&mut self.next_completion_id);
-        let task = cx.spawn_in(window, async move |editor, cx| {
-            if editor
-                .update(cx, |this, _| {
-                    this.completion_tasks.retain(|(task_id, _)| *task_id >= id);
-                })
-                .is_err()
-            {
+    pub(crate) fn handle_completions_menu_updated(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.focus_handle.is_focused(window) {
+            if self.is_completions_menu_visible() {
+                crate::hover_popover::hide_hover(self, cx);
+
+                if self.show_edit_predictions_in_menu() {
+                    self.update_visible_inline_completion(window, cx);
+                } else {
+                    self.discard_inline_completion(false, cx);
+                }
+
+                cx.notify();
                 return;
-            };
+            }
+        }
 
-            let menu = f(id, editor.clone(), cx).await;
+        let was_hidden = self.hide_context_menu(window, cx).is_none();
+        // If it was already hidden and we don't show inline completions in the menu, we should
+        // also show the inline-completion when available.
+        if was_hidden && self.show_edit_predictions_in_menu() {
+            self.update_visible_inline_completion(window, cx);
+        }
+    }
 
-            editor
-                .update_in(cx, |editor, window, cx| {
-                    match editor.context_menu.borrow().as_ref() {
-                        None => {}
-                        Some(CodeContextMenu::Completions(prev_menu)) => {
-                            if prev_menu.id > id {
-                                return;
-                            }
-                        }
-                        _ => return,
-                    }
-
-                    if editor.focus_handle.is_focused(window) {
-                        if let Some(mut menu) = menu {
-                            menu.resolve_visible_completions(
-                                editor.completion_provider.as_deref(),
-                                cx,
-                            );
-                            crate::hover_popover::hide_hover(editor, cx);
-                            *editor.context_menu.borrow_mut() =
-                                Some(CodeContextMenu::Completions(menu));
-
-                            if editor.show_edit_predictions_in_menu() {
-                                editor.update_visible_inline_completion(window, cx);
-                            } else {
-                                editor.discard_inline_completion(false, cx);
-                            }
-
-                            cx.notify();
-                            return;
-                        }
-                    }
-
-                    if editor.completion_tasks.len() <= 1 {
-                        // If there are no more completion tasks and the last menu was empty, we should hide it.
-                        let was_hidden = editor.hide_context_menu(window, cx).is_none();
-                        // If it was already hidden and we don't show inline completions in the menu, we should
-                        // also show the inline-completion when available.
-                        if was_hidden && editor.show_edit_predictions_in_menu() {
-                            editor.update_visible_inline_completion(window, cx);
-                        }
-                    }
-                })
-                .ok();
-        });
-
-        self.completion_tasks.push((id, task));
+    pub fn is_completions_menu_visible(&self) -> bool {
+        let Some(CodeContextMenu::Completions(menu)) = self.context_menu.borrow().as_ref() else {
+            return false;
+        };
+        menu.visible()
     }
 
     #[cfg(feature = "test-support")]
@@ -5388,21 +5072,6 @@ impl Editor {
         } else {
             None
         }
-    }
-
-    pub fn with_completions_menu_matching_id<R>(
-        &self,
-        id: CompletionId,
-        f: impl FnOnce(Option<&mut CompletionsMenu>) -> R,
-    ) -> R {
-        let mut context_menu = self.context_menu.borrow_mut();
-        let Some(CodeContextMenu::Completions(completions_menu)) = &mut *context_menu else {
-            return f(None);
-        };
-        if completions_menu.id != id {
-            return f(None);
-        }
-        f(Some(completions_menu))
     }
 
     pub fn confirm_completion(
@@ -8914,7 +8583,6 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> Option<CodeContextMenu> {
         cx.notify();
-        self.completion_tasks.clear();
         let context_menu = self.context_menu.borrow_mut().take();
         self.stale_inline_completion_in_menu.take();
         self.update_visible_inline_completion(window, cx);
@@ -8937,7 +8605,6 @@ impl Editor {
         }
         let buffer_id = selection.start.buffer_id.unwrap();
         let buffer = self.buffer().read(cx).buffer(buffer_id);
-        let id = post_inc(&mut self.next_completion_id);
         let snippet_sort_order = EditorSettings::get_global(cx).snippet_sort_order;
 
         if let Some(buffer) = buffer {

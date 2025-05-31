@@ -329,7 +329,7 @@ impl LspCommand for PrepareRename {
             }
             Some(lsp::PrepareRenameResponse::DefaultBehavior { .. }) => {
                 let snapshot = buffer.snapshot();
-                let (range, _) = snapshot.surrounding_word(self.position);
+                let (range, _) = snapshot.surrounding_word(self.position, false);
                 let range = snapshot.anchor_after(range.start)..snapshot.anchor_before(range.end);
                 Ok(PrepareRenameResponse::Success(range))
             }
@@ -2229,7 +2229,7 @@ impl LspCommand for GetCompletions {
                             range_for_token
                                 .get_or_insert_with(|| {
                                     let offset = self.position.to_offset(&snapshot);
-                                    let (range, kind) = snapshot.surrounding_word(offset);
+                                    let (range, kind) = snapshot.surrounding_word(offset, false);
                                     let range = if kind == Some(CharKind::Word) {
                                         range
                                     } else {
