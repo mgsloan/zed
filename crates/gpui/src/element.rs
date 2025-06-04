@@ -41,7 +41,8 @@ use std::{
     any::Any,
     fmt::{self, Debug, Display},
     hash::{Hash, Hasher},
-    mem, panic,
+    mem,
+    panic::{self, Location},
     rc::Rc,
 };
 
@@ -276,13 +277,14 @@ pub struct GlobalElementId {
     pub(crate) element_path_hash: u64,
 
     #[cfg(any(feature = "inspector", debug_assertions))]
-    pub(crate) location_and_instance_id: Option<(&'static std::panic::Location<'static>, usize)>,
+    pub(crate) location_and_instance_id: Option<(&'static Location<'static>, usize)>,
 }
 
 impl GlobalElementId {
     pub(crate) fn new(
         parent: Option<Rc<GlobalElementId>>,
         element_id: ElementId,
+        location_and_instance_id: Option<(&'static Location<'static>, usize)>,
     ) -> GlobalElementId {
         let mut hasher = FxHasher::default();
         if let Some(parent) = &parent {
@@ -299,7 +301,7 @@ impl GlobalElementId {
             #[cfg(any(feature = "inspector", debug_assertions))]
             element_id: Some(element_id),
             #[cfg(any(feature = "inspector", debug_assertions))]
-            location_and_instance_id: None,
+            location_and_instance_id,
         }
     }
 

@@ -6,8 +6,11 @@ use std::{
     any::{Any, TypeId},
     fmt::{self, Debug, Display},
     hash::{Hash, Hasher},
-    rc::Rc,
 };
+
+// todo! how to not have instance id?
+#[derive(Clone)]
+pub struct InspectorElementPath(pub(crate) GlobalElementId);
 
 #[derive(Clone)]
 pub struct InspectorElementId(pub(crate) GlobalElementId);

@@ -39,6 +39,7 @@ use std::{
     marker::PhantomData,
     mem,
     ops::{DerefMut, Range},
+    panic::Location,
     rc::Rc,
     sync::{
         Arc, Weak,
@@ -2207,11 +2208,33 @@ impl Window {
     pub fn with_global_id<R>(
         &mut self,
         element_id: ElementId,
+        source: Option<&'static Location>,
         f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
     ) -> R {
+        let location_and_instance_id;
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        {
+            location_and_instance_id = source.map(|source| {
+                let path = todo!();
+                let next_instance_id = self
+                    .next_frame
+                    .next_inspector_instance_ids
+                    .entry(path.clone())
+                    .or_insert(0);
+                let instance_id = *next_instance_id;
+                *next_instance_id += 1;
+                (source, instance_id)
+            });
+        }
+        #[cfg(not(any(feature = "inspector", debug_assertions)))]
+        {
+            location_and_instance_id = None;
+        }
+
         let new_id = Rc::new(GlobalElementId::new(
             self.element_id_stack.clone(),
             element_id,
+            location_and_instance_id,
         ));
         let original_id = self.element_id_stack.replace(new_id.clone());
         let result = f(&new_id, self);
@@ -2223,10 +2246,13 @@ impl Window {
     pub fn with_optional_global_id<R>(
         &mut self,
         element_id: Option<ElementId>,
+        source: Option<&'static Location>,
         f: impl FnOnce(Option<&GlobalElementId>, &mut Self) -> R,
     ) -> R {
         if let Some(element_id) = element_id {
-            self.with_global_id(element_id, |global_id, window| f(Some(global_id), window))
+            self.with_global_id(element_id, source, |global_id, window| {
+                f(Some(global_id), window)
+            })
         } else {
             f(None, self)
         }
