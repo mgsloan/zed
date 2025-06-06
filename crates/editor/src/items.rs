@@ -1249,6 +1249,7 @@ impl SerializableItem for Editor {
                 .worktree_for_id(worktree_id, cx)
                 .and_then(|worktree| worktree.read(cx).absolutize(&file.path()).ok())
                 .or_else(|| {
+                    // todo! How can this branch even happen?
                     let full_path = file.full_path(cx);
                     let project_path = project.read(cx).find_project_path(&full_path, cx)?;
                     project.read(cx).absolute_path(&project_path, cx)

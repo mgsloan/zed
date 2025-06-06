@@ -6,8 +6,8 @@ use language_model::{LanguageModel, LanguageModelRequest, LanguageModelToolSchem
 use project::{Project, WorktreeSettings};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
-use std::{fmt::Write, path::Path, sync::Arc};
+use settings::{Settings, SettingsLocation};
+use std::{fmt::Write, sync::Arc};
 use ui::IconName;
 use util::markdown::MarkdownInlineCode;
 
@@ -111,19 +111,19 @@ impl Tool for ListDirectoryTool {
             return Task::ready(Ok(output.into())).into();
         }
 
-        let Some(project_path) = project.read(cx).find_project_path(&input.path, cx) else {
+        let Some(directory_path) = project.read(cx).find_project_path(&input.path, cx) else {
             return Task::ready(Err(anyhow!("Path {} not found in project", input.path))).into();
         };
         let Some(worktree) = project
             .read(cx)
-            .worktree_for_id(project_path.worktree_id, cx)
+            .worktree_for_id(directory_path.worktree_id, cx)
         else {
             return Task::ready(Err(anyhow!("Worktree not found"))).into();
         };
 
         // Check if the directory whose contents we're listing is itself excluded or private
         let global_settings = WorktreeSettings::get_global(cx);
-        if global_settings.is_path_excluded(&project_path.path) {
+        if global_settings.is_path_excluded(&directory_path.path) {
             return Task::ready(Err(anyhow!(
                 "Cannot list directory because its path matches the user's global `file_scan_exclusions` setting: {}",
                 &input.path
@@ -131,7 +131,7 @@ impl Tool for ListDirectoryTool {
             .into();
         }
 
-        if global_settings.is_path_private(&project_path.path) {
+        if global_settings.is_path_private(&directory_path.path) {
             return Task::ready(Err(anyhow!(
                 "Cannot list directory because its path matches the user's global `private_files` setting: {}",
                 &input.path
@@ -139,8 +139,8 @@ impl Tool for ListDirectoryTool {
             .into();
         }
 
-        let worktree_settings = WorktreeSettings::get(Some((&project_path).into()), cx);
-        if worktree_settings.is_path_excluded(&project_path.path) {
+        let worktree_settings = WorktreeSettings::get(Some((&directory_path).into()), cx);
+        if worktree_settings.is_path_excluded(&directory_path.path) {
             return Task::ready(Err(anyhow!(
                 "Cannot list directory because its path matches the user's worktree`file_scan_exclusions` setting: {}",
                 &input.path
@@ -148,7 +148,7 @@ impl Tool for ListDirectoryTool {
             .into();
         }
 
-        if worktree_settings.is_path_private(&project_path.path) {
+        if worktree_settings.is_path_private(&directory_path.path) {
             return Task::ready(Err(anyhow!(
                 "Cannot list directory because its path matches the user's worktree `private_paths` setting: {}",
                 &input.path
@@ -156,22 +156,21 @@ impl Tool for ListDirectoryTool {
             .into();
         }
 
-        let worktree_snapshot = worktree.read(cx).snapshot();
-        let worktree_root_name = worktree.read(cx).root_name().to_string();
+        let worktree_ref = worktree.read(cx);
+        let worktree_snapshot = worktree_ref.snapshot();
 
-        let Some(entry) = worktree_snapshot.entry_for_path(&project_path.path) else {
+        let Some(entry) = worktree_snapshot.entry_for_path(&directory_path.path) else {
             return Task::ready(Err(anyhow!("Path not found: {}", input.path))).into();
         };
 
         if !entry.is_dir() {
             return Task::ready(Err(anyhow!("{} is not a directory.", input.path))).into();
         }
-        let worktree_snapshot = worktree.read(cx).snapshot();
 
         let mut folders = Vec::new();
         let mut files = Vec::new();
 
-        for entry in worktree_snapshot.child_entries(&project_path.path) {
+        for entry in worktree_snapshot.child_entries(&directory_path.path) {
             // Skip private and excluded files and directories
             if global_settings.is_path_private(&entry.path)
                 || global_settings.is_path_excluded(&entry.path)
@@ -179,24 +178,18 @@ impl Tool for ListDirectoryTool {
                 continue;
             }
 
-            if project
-                .read(cx)
-                .find_project_path(&entry.path, cx)
-                .map(|project_path| {
-                    let worktree_settings = WorktreeSettings::get(Some((&project_path).into()), cx);
-
-                    worktree_settings.is_path_excluded(&project_path.path)
-                        || worktree_settings.is_path_private(&project_path.path)
-                })
-                .unwrap_or(false)
+            let settings_location = SettingsLocation {
+                worktree_id: directory_path.worktree_id,
+                path: &entry.path,
+            };
+            let worktree_settings = WorktreeSettings::get(Some(settings_location), cx);
+            if worktree_settings.is_path_excluded(&entry.path)
+                || worktree_settings.is_path_private(&entry.path)
             {
                 continue;
             }
 
-            let full_path = Path::new(&worktree_root_name)
-                .join(&entry.path)
-                .display()
-                .to_string();
+            let full_path = worktree_ref.full_path(&entry.path).display().to_string();
             if entry.is_dir() {
                 folders.push(full_path);
             } else {

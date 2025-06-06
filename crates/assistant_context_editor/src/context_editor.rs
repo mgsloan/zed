@@ -1446,16 +1446,9 @@ impl ContextEditor {
     ) {
         let mut file_slash_command_args = vec![];
         for project_path in opened_paths.into_iter() {
-            let Some(worktree) = self
-                .project
-                .read(cx)
-                .worktree_for_id(project_path.worktree_id, cx)
-            else {
+            let Some(full_path) = project_path.full_path(self.project.read(cx), cx) else {
                 continue;
             };
-            let worktree_root_name = worktree.read(cx).root_name().to_string();
-            let mut full_path = PathBuf::from(worktree_root_name.clone());
-            full_path.push(&project_path.path);
             file_slash_command_args.push(full_path.to_string_lossy().to_string());
         }
 

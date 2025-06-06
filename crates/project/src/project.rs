@@ -364,6 +364,12 @@ impl ProjectPath {
     pub fn starts_with(&self, other: &ProjectPath) -> bool {
         self.worktree_id == other.worktree_id && self.path.starts_with(&other.path)
     }
+
+    pub fn full_path(&self, project: &Project, cx: &App) -> Option<PathBuf> {
+        project
+            .worktree_for_id(self.worktree_id, cx)
+            .map(|worktree| worktree.read(cx).full_path(&self.path))
+    }
 }
 
 #[derive(Debug, Default)]

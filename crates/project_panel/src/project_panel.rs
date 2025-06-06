@@ -2512,6 +2512,7 @@ impl ProjectPanel {
 
             let include_root = self.project.read(cx).visible_worktrees(cx).count() > 1;
             let dir_path = if include_root {
+                // todo!
                 let mut full_path = PathBuf::from(worktree.read(cx).root_name());
                 full_path.push(&dir_path);
                 Arc::from(full_path)
@@ -2933,6 +2934,7 @@ impl ProjectPanel {
                                 .strip_prefix(root_folded_entry)
                                 .ok()
                                 .and_then(|suffix| {
+                                    // todo!
                                     let full_path = Path::new(root_folded_entry.file_name()?);
                                     Some(ArcCow::Owned(Arc::<Path>::from(full_path.join(suffix))))
                                 })

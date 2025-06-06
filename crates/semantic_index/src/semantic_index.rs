@@ -123,6 +123,7 @@ impl SemanticDb {
             } else {
                 let output = result.worktree.read_with(cx, |worktree, _cx| {
                     let entry_abs_path = worktree.abs_path().join(&result.path);
+                    // todo!
                     let mut entry_full_path = PathBuf::from(worktree.root_name());
                     entry_full_path.push(&result.path);
                     let file_content = async {

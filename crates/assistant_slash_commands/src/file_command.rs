@@ -66,14 +66,11 @@ impl FileSlashCommand {
                 entries
                     .into_iter()
                     .filter_map(|(entry, is_dir)| {
-                        let worktree = project.worktree_for_id(entry.worktree_id, cx)?;
-                        let mut full_path = PathBuf::from(worktree.read(cx).root_name());
-                        full_path.push(&entry.path);
                         Some(PathMatch {
                             score: 0.,
                             positions: Vec::new(),
                             worktree_id: entry.worktree_id.to_usize(),
-                            path: full_path.into(),
+                            path: entry.full_path(project, cx)?.into(),
                             path_prefix: path_prefix.clone(),
                             distance_to_relative_ancestor: 0,
                             is_dir,

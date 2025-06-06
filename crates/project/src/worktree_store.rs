@@ -770,6 +770,7 @@ impl WorktreeStore {
                 if is_file {
                     if query.filters_path() {
                         let matched_path = if query.match_full_paths() {
+                            // todo!
                             let mut full_path = PathBuf::from(snapshot.root_name());
                             full_path.push(&path);
                             query.match_path(&full_path)
@@ -833,6 +834,7 @@ impl WorktreeStore {
 
                 if query.filters_path() {
                     let matched_path = if query.match_full_paths() {
+                        // todo!
                         let mut full_path = PathBuf::from(snapshot.root_name());
                         full_path.push(&entry.path);
                         query.match_path(&full_path)
