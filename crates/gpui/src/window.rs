@@ -27,7 +27,7 @@ use futures::channel::oneshot;
 use parking_lot::RwLock;
 use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use refineable::Refineable;
-use slotmap::SlotMap;
+use slotmap::{ApproximateSecondarySet, SlotMap};
 use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
@@ -787,7 +787,7 @@ pub struct Window {
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
-    pub(crate) dirty_views: FxHashSet<EntityId>,
+    pub(crate) dirty_views: ApproximateSecondarySet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
     default_prevented: bool,
@@ -1091,7 +1091,7 @@ impl Window {
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
-            dirty_views: FxHashSet::default(),
+            dirty_views: ApproximateSecondarySet::new(),
             focus_listeners: SubscriberSet::new(),
             focus_lost_listeners: SubscriberSet::new(),
             default_prevented: true,
@@ -1161,22 +1161,6 @@ impl ContentMask<Pixels> {
 }
 
 impl Window {
-    fn mark_view_dirty(&mut self, view_id: EntityId) {
-        // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
-        // should already be dirty.
-        for view_id in self
-            .rendered_frame
-            .dispatch_tree
-            .view_path(view_id)
-            .into_iter()
-            .rev()
-        {
-            if !self.dirty_views.insert(view_id) {
-                break;
-            }
-        }
-    }
-
     /// Registers a callback to be invoked when the window appearance changes.
     pub fn observe_window_appearance(
         &self,
@@ -1734,7 +1718,6 @@ impl Window {
     /// the contents of the new [Scene], use [present].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) {
-        self.invalidate_entities();
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
         self.invalidator.set_dirty(false);
@@ -1814,20 +1797,12 @@ impl Window {
         let handle = self.handle;
         cx.record_entities_accessed(
             handle,
-            // Try moving window invalidator into the Window
+            // todo! Try moving window invalidator into the Window
             self.invalidator.clone(),
             &entities,
         );
         let mut entities_ref = cx.entities.accessed_entities.borrow_mut();
         mem::swap(&mut entities, entities_ref.deref_mut());
-    }
-
-    fn invalidate_entities(&mut self) {
-        let mut views = self.invalidator.take_views();
-        for entity in views.drain() {
-            self.mark_view_dirty(entity);
-        }
-        self.invalidator.replace_views(views);
     }
 
     #[profiling::function]

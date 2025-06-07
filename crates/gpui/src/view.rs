@@ -7,6 +7,7 @@ use crate::{Empty, Window};
 use anyhow::Result;
 use collections::FxHashSet;
 use refineable::Refineable;
+use slotmap::ApproximateSecondarySet;
 use std::mem;
 use std::rc::Rc;
 use std::{any::TypeId, fmt, ops::Range};
@@ -15,7 +16,7 @@ struct AnyViewState {
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     cache_key: ViewCacheKey,
-    accessed_entities: FxHashSet<EntityId>,
+    accessed_entities: ApproximateSecondarySet<EntityId>,
 }
 
 #[derive(Default)]

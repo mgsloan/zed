@@ -18,7 +18,7 @@ use futures::{
     future::{LocalBoxFuture, Shared},
 };
 use parking_lot::RwLock;
-use slotmap::SlotMap;
+use slotmap::{ApproximateSecondarySet, SlotMap};
 
 pub use async_context::*;
 use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
@@ -475,22 +475,19 @@ impl App {
     pub(crate) fn detect_accessed_entities<R>(
         &mut self,
         callback: impl FnOnce(&mut App) -> R,
-    ) -> (R, FxHashSet<EntityId>) {
+    ) -> (R, ApproximateSecondarySet<EntityId>) {
         let accessed_entities_start = self.entities.accessed_entities.borrow().clone();
         let result = callback(self);
-        let accessed_entities_end = self.entities.accessed_entities.borrow().clone();
-        let entities_accessed_in_callback = accessed_entities_end
-            .difference(&accessed_entities_start)
-            .copied()
-            .collect::<FxHashSet<EntityId>>();
-        (result, entities_accessed_in_callback)
+        let mut accessed_entities = self.entities.accessed_entities.borrow().clone();
+        accessed_entities.difference_with(&accessed_entities_start);
+        (result, accessed_entities)
     }
 
     pub(crate) fn record_entities_accessed(
         &mut self,
         window_handle: AnyWindowHandle,
         invalidator: WindowInvalidator,
-        entities: &FxHashSet<EntityId>,
+        entities: &ApproximateSecondarySet<EntityId>,
     ) {
         let mut tracked_entities =
             std::mem::take(self.tracked_entities.entry(window_handle.id).or_default());
