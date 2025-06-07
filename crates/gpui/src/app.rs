@@ -1657,15 +1657,12 @@ impl App {
                 .or_default(),
         );
 
-        if window_invalidators.is_empty() {
-            if self.pending_notifications.insert(entity_id) {
-                self.pending_effects
-                    .push_back(Effect::Notify { emitter: entity_id });
-            }
-        } else {
-            for invalidator in window_invalidators.values() {
-                invalidator.invalidate_view(entity_id, self);
-            }
+        let mut is_drawing = false;
+        for invalidator in window_invalidators.values() {
+            is_drawing = is_drawing || !invalidator.invalidate_view(entity_id, self)
+        }
+        if !is_drawing {
+            self.push_effect(Effect::Notify { emitter: entity_id });
         }
 
         self.window_invalidators_by_entity

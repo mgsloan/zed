@@ -113,7 +113,6 @@ impl WindowInvalidator {
         inner.dirty_views.insert(entity);
         if inner.draw_phase == DrawPhase::None {
             inner.dirty = true;
-            cx.push_effect(Effect::Notify { emitter: entity });
             true
         } else {
             false
