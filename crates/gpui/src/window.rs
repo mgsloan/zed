@@ -108,12 +108,11 @@ impl WindowInvalidator {
         }
     }
 
-    pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
+    pub fn invalidate_view(&self, entity: EntityId) -> bool {
         let mut inner = self.inner.borrow_mut();
         inner.dirty_views.insert(entity);
         if inner.draw_phase == DrawPhase::None {
             inner.dirty = true;
-            cx.push_effect(Effect::Notify { emitter: entity });
             true
         } else {
             false
