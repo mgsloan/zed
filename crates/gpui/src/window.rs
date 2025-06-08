@@ -4,8 +4,8 @@ use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Context,
     Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener, DispatchNodeId,
-    DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext,
+    DispatchTree, DisplayId, Edges, Entity, EntityId, EventEmitter, FileDropEvent, FontId, Global,
+    GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext,
     KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers,
     ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
@@ -18,7 +18,7 @@ use crate::{
     WindowParams, WindowTextSystem, point, prelude::*, px, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
-use collections::{FxHashMap, FxHashSet};
+use collections::FxHashMap;
 #[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
 use derive_more::{Deref, DerefMut};
@@ -27,7 +27,7 @@ use futures::channel::oneshot;
 use parking_lot::RwLock;
 use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use refineable::Refineable;
-use slotmap::SlotMap;
+use slotmap::{ApproximateSecondarySet, SlotMap};
 use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
@@ -46,8 +46,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use util::post_inc;
 use util::{ResultExt, measure};
+use util::{is_measuring, post_inc};
 use uuid::Uuid;
 
 mod prompts;
@@ -83,91 +83,6 @@ impl DispatchPhase {
     /// Returns true if this represents the "capture" phase.
     pub fn capture(self) -> bool {
         self == DispatchPhase::Capture
-    }
-}
-
-struct WindowInvalidatorInner {
-    pub dirty: bool,
-    pub draw_phase: DrawPhase,
-    pub dirty_views: FxHashSet<EntityId>,
-}
-
-#[derive(Clone)]
-pub(crate) struct WindowInvalidator {
-    inner: Rc<RefCell<WindowInvalidatorInner>>,
-}
-
-impl WindowInvalidator {
-    pub fn new() -> Self {
-        WindowInvalidator {
-            inner: Rc::new(RefCell::new(WindowInvalidatorInner {
-                dirty: true,
-                draw_phase: DrawPhase::None,
-                dirty_views: FxHashSet::default(),
-            })),
-        }
-    }
-
-    pub fn invalidate_view(&self, entity: EntityId) -> bool {
-        let mut inner = self.inner.borrow_mut();
-        inner.dirty_views.insert(entity);
-        if inner.draw_phase == DrawPhase::None {
-            inner.dirty = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn is_dirty(&self) -> bool {
-        self.inner.borrow().dirty
-    }
-
-    pub fn set_dirty(&self, dirty: bool) {
-        self.inner.borrow_mut().dirty = dirty
-    }
-
-    pub fn set_phase(&self, phase: DrawPhase) {
-        self.inner.borrow_mut().draw_phase = phase
-    }
-
-    pub fn take_views(&self) -> FxHashSet<EntityId> {
-        mem::take(&mut self.inner.borrow_mut().dirty_views)
-    }
-
-    pub fn replace_views(&self, views: FxHashSet<EntityId>) {
-        self.inner.borrow_mut().dirty_views = views;
-    }
-
-    pub fn not_drawing(&self) -> bool {
-        self.inner.borrow().draw_phase == DrawPhase::None
-    }
-
-    #[track_caller]
-    pub fn debug_assert_paint(&self) {
-        debug_assert!(
-            matches!(self.inner.borrow().draw_phase, DrawPhase::Paint),
-            "this method can only be called during paint"
-        );
-    }
-
-    #[track_caller]
-    pub fn debug_assert_prepaint(&self) {
-        debug_assert!(
-            matches!(self.inner.borrow().draw_phase, DrawPhase::Prepaint),
-            "this method can only be called during request_layout, or prepaint"
-        );
-    }
-
-    #[track_caller]
-    pub fn debug_assert_paint_or_prepaint(&self) {
-        debug_assert!(
-            matches!(
-                self.inner.borrow().draw_phase,
-                DrawPhase::Paint | DrawPhase::Prepaint
-            ),
-            "this method can only be called during request_layout, prepaint, or paint"
-        );
     }
 }
 
@@ -758,7 +673,10 @@ impl Frame {
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
-    pub(crate) invalidator: WindowInvalidator,
+    pub(crate) draw_phase: DrawPhase,
+    pub(crate) dirty: bool,
+    pub(crate) dirty_views: ApproximateSecondarySet<EntityId>,
+    pub(crate) tracked_entities: ApproximateSecondarySet<EntityId>,
     pub(crate) removed: bool,
     pub(crate) platform_window: Box<dyn PlatformWindow>,
     display_id: Option<DisplayId>,
@@ -787,7 +705,6 @@ pub struct Window {
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
-    pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
     default_prevented: bool,
@@ -909,7 +826,6 @@ impl Window {
         let scale_factor = platform_window.scale_factor();
         let appearance = platform_window.appearance();
         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
-        let invalidator = WindowInvalidator::new();
         let active = Rc::new(Cell::new(platform_window.is_active()));
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
@@ -936,7 +852,6 @@ impl Window {
         }));
         platform_window.on_request_frame(Box::new({
             let mut cx = cx.to_async();
-            let invalidator = invalidator.clone();
             let active = active.clone();
             let needs_present = needs_present.clone();
             let next_frame_callbacks = next_frame_callbacks.clone();
@@ -955,25 +870,116 @@ impl Window {
 
                 // Keep presenting the current scene for 1 extra second since the
                 // last input to prevent the display from underclocking the refresh rate.
+                //
+                // todo! mac only?
                 let needs_present = request_frame_options.require_presentation
                     || needs_present.get()
                     || (active.get()
                         && last_input_timestamp.get().elapsed() < Duration::from_secs(1));
 
-                if invalidator.is_dirty() {
-                    measure("frame duration", || {
+                cx.update(|cx| {
+                    if !cx.entities_notified_since_last_draw.is_empty() {
+                        for window in cx.windows().into_iter() {
+                            // todo! variant that doesn't update entity.
+                            cx.update_window(window, |_, window, cx| {
+                                window
+                                    .dirty_views
+                                    .union_with(&cx.entities_notified_since_last_draw);
+                                // todo! rename dirty_views to dirty_entities
+                                if !window.dirty
+                                    && !window.dirty_views.is_disjoint(&window.tracked_entities)
+                                {
+                                    window.dirty = true;
+                                }
+                            })
+                            .ok();
+                        }
+                        cx.entities_notified_since_last_draw.clear();
+                    }
+                    cx.update_window(handle, |_, window, cx| {
+                        window.draw_and_present(needs_present, cx);
+                    })
+                    .ok();
+                });
+
+                /* todo! optimize dirty checks
+                cx.update(|cx| {
+                    // todo! What are the Options in windows?
+                    if cx.windows.len() > 1 && ! {
+                        if !cx.entities_notified_since_last_draw.is_empty() {
+                            // todo! don't collect windows to vec
+                            for window in cx.windows().into_iter() {
+                                // todo! variant that doesn't update entity.
+                                cx.update_window(window, |_, window, cx| {
+                                    if !window.dirty
+                                        && !window
+                                            .tracked_entities
+                                            .is_disjoint(&cx.entities_notified_since_last_draw)
+                                    {
+                                        window.dirty = true;
+                                    }
+                                });
+                            }
+                        } else {
+                            // todo! variant that doesn't update entity.
+                            cx.update_window(handle, |_, window, cx| {
+                                Self::draw_and_present(window, cx);
+                            });
+                        }
+                    } else {
+                        // todo! variant that doesn't update entity.
+                        cx.update_window(handle, |_, window, cx| {
+                            if !window.dirty && !window.tracked_entities.is_disjoint(&cx.entities_notified_since_last_draw) {
+                                window.dirty = true;
+                            }
+                            Self::draw_and_present(window, cx);
+                        });
+                    }
+                })
+                .ok();
+
+                if is_measuring() {
+                    let Some(app) = cx.app.upgrade().context("app was released").log_err() else {
+                        return;
+                    };
+                    let lock = app.borrow();
+                    let Some(window) = lock.windows.get(handle.window_id()) else {
+                        return;
+                    };
+                    let Some(window) = window else {
+                        return;
+                    };
+                    if window.dirty {
+                        drop(lock);
+                        measure("frame duration", || {
+                            // todo! update that doesn't get the root entity.
+                            handle
+                                .update(&mut cx, |_, window, cx| {
+                                    if window.dirty {
+                                        window.draw(cx);
+                                    }
+                                    window.present();
+                                })
+                                .log_err();
+                        })
+                    } else {
                         handle
-                            .update(&mut cx, |_, window, cx| {
-                                window.draw(cx);
+                            .update(&mut cx, |_, window, _| {
                                 window.present();
                             })
                             .log_err();
-                    })
-                } else if needs_present {
+                    }
+                } else {
                     handle
-                        .update(&mut cx, |_, window, _| window.present())
+                        .update(&mut cx, |_, window, cx| {
+                            if window.dirty {
+                                window.draw(cx);
+                            }
+                            window.present();
+                        })
                         .log_err();
                 }
+                */
 
                 handle
                     .update(&mut cx, |_, window, _| {
@@ -1067,7 +1073,10 @@ impl Window {
 
         Ok(Window {
             handle,
-            invalidator,
+            draw_phase: DrawPhase::None,
+            dirty: true,
+            dirty_views: ApproximateSecondarySet::new(),
+            tracked_entities: ApproximateSecondarySet::new(),
             removed: false,
             platform_window,
             display_id,
@@ -1091,7 +1100,6 @@ impl Window {
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
-            dirty_views: FxHashSet::default(),
             focus_listeners: SubscriberSet::new(),
             focus_lost_listeners: SubscriberSet::new(),
             default_prevented: true,
@@ -1119,6 +1127,18 @@ impl Window {
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })
+    }
+
+    // todo! inline?
+    fn draw_and_present(&mut self, needs_present: bool, cx: &mut App) {
+        if self.dirty {
+            measure("frame duration", || {
+                self.draw(cx);
+                self.present();
+            });
+        } else if needs_present {
+            self.present();
+        }
     }
 
     pub(crate) fn new_focus_listener(
@@ -1161,22 +1181,6 @@ impl ContentMask<Pixels> {
 }
 
 impl Window {
-    fn mark_view_dirty(&mut self, view_id: EntityId) {
-        // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
-        // should already be dirty.
-        for view_id in self
-            .rendered_frame
-            .dispatch_tree
-            .view_path(view_id)
-            .into_iter()
-            .rev()
-        {
-            if !self.dirty_views.insert(view_id) {
-                break;
-            }
-        }
-    }
-
     /// Registers a callback to be invoked when the window appearance changes.
     pub fn observe_window_appearance(
         &self,
@@ -1225,9 +1229,9 @@ impl Window {
 
     /// Mark the window as dirty, scheduling it to be redrawn on the next frame.
     pub fn refresh(&mut self) {
-        if self.invalidator.not_drawing() {
+        if self.draw_phase == DrawPhase::None {
             self.refreshing = true;
-            self.invalidator.set_dirty(true);
+            self.dirty = true;
         }
     }
 
@@ -1673,7 +1677,7 @@ impl Window {
     where
         F: FnOnce(&mut Self) -> R,
     {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
 
         if let Some(rem_size) = rem_size {
             self.rem_size_override_stack.push(rem_size.into());
@@ -1734,10 +1738,10 @@ impl Window {
     /// the contents of the new [Scene], use [present].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) {
-        self.invalidate_entities();
-        cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
-        self.invalidator.set_dirty(false);
+
+        cx.entities.clear_accessed();
+        self.dirty = false;
         self.requested_autoscroll = None;
 
         // Restore the previously-used input handler.
@@ -1765,7 +1769,7 @@ impl Window {
             element_arena.clear();
         });
 
-        self.invalidator.set_phase(DrawPhase::Focus);
+        self.draw_phase = DrawPhase::Focus;
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
@@ -1803,31 +1807,41 @@ impl Window {
         self.record_entities_accessed(cx);
         self.reset_cursor_style(cx);
         self.refreshing = false;
-        self.invalidator.set_phase(DrawPhase::None);
+        self.draw_phase = DrawPhase::None;
         self.needs_present.set(true);
     }
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
-        let mut entities_ref = cx.entities.accessed_entities.borrow_mut();
-        let mut entities = mem::take(entities_ref.deref_mut());
-        drop(entities_ref);
-        let handle = self.handle;
-        cx.record_entities_accessed(
-            handle,
-            // Try moving window invalidator into the Window
-            self.invalidator.clone(),
-            &entities,
-        );
-        let mut entities_ref = cx.entities.accessed_entities.borrow_mut();
-        mem::swap(&mut entities, entities_ref.deref_mut());
+        // todo! rename?
+        self.tracked_entities
+            .clone_from(&cx.entities.accessed_entities.borrow());
+        // todo! how to handle this now? Ideally could warn when entities are notifying during
+        // render. But there are other callers of draw.
+        cx.entities_notified_since_last_draw.clear();
     }
 
-    fn invalidate_entities(&mut self) {
-        let mut views = self.invalidator.take_views();
-        for entity in views.drain() {
-            self.mark_view_dirty(entity);
-        }
-        self.invalidator.replace_views(views);
+    #[track_caller]
+    fn debug_assert_paint(&self) {
+        debug_assert!(
+            matches!(self.draw_phase, DrawPhase::Paint),
+            "this method can only be called during paint"
+        );
+    }
+
+    #[track_caller]
+    fn debug_assert_prepaint(&self) {
+        debug_assert!(
+            matches!(self.draw_phase, DrawPhase::Prepaint),
+            "this method can only be called during request_layout, or prepaint"
+        );
+    }
+
+    #[track_caller]
+    fn debug_assert_paint_or_prepaint(&self) {
+        debug_assert!(
+            matches!(self.draw_phase, DrawPhase::Paint | DrawPhase::Prepaint),
+            "this method can only be called during request_layout, prepaint, or paint"
+        );
     }
 
     #[profiling::function]
@@ -1838,7 +1852,7 @@ impl Window {
     }
 
     fn draw_roots(&mut self, cx: &mut App) {
-        self.invalidator.set_phase(DrawPhase::Prepaint);
+        self.draw_phase = DrawPhase::Prepaint;
         self.tooltip_bounds.take();
 
         let _inspector_width: Pixels = rems(30.0).to_pixels(self.rem_size());
@@ -1892,7 +1906,7 @@ impl Window {
         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
 
         // Now actually paint the elements.
-        self.invalidator.set_phase(DrawPhase::Paint);
+        self.draw_phase = DrawPhase::Paint;
         root_element.paint(self, cx);
 
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -2157,7 +2171,7 @@ impl Window {
     where
         F: FnOnce(&mut Self) -> R,
     {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         if let Some(style) = style {
             self.text_style_stack.push(style);
             let result = f(self);
@@ -2171,7 +2185,7 @@ impl Window {
     /// Updates the cursor style at the platform level. This method should only be called
     /// during the prepaint phase of element drawing.
     pub fn set_cursor_style(&mut self, style: CursorStyle, hitbox: &Hitbox) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
         self.next_frame.cursor_styles.push(CursorStyleRequest {
             hitbox_id: hitbox.id,
             style,
@@ -2183,14 +2197,14 @@ impl Window {
     /// `set_cursor_style`. This method should only be called during the prepaint
     /// phase of element drawing.
     pub fn set_window_cursor_style(&mut self, style: CursorStyle) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
         self.next_frame.window_cursor_style = Some(style);
     }
 
     /// Sets a tooltip to be rendered for the upcoming frame. This method should only be called
     /// during the paint phase of element drawing.
     pub fn set_tooltip(&mut self, tooltip: AnyTooltip) -> TooltipId {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         let id = TooltipId(post_inc(&mut self.next_tooltip_id.0));
         self.next_frame
             .tooltip_requests
@@ -2205,7 +2219,7 @@ impl Window {
         mask: Option<ContentMask<Pixels>>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         if let Some(mask) = mask {
             let mask = mask.intersect(&self.content_mask());
             self.content_mask_stack.push(mask);
@@ -2224,7 +2238,7 @@ impl Window {
         offset: Point<Pixels>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
 
         if offset.is_zero() {
             return f(self);
@@ -2242,7 +2256,7 @@ impl Window {
         offset: Point<Pixels>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         self.element_offset_stack.push(offset);
         let result = f(self);
         self.element_offset_stack.pop();
@@ -2258,7 +2272,7 @@ impl Window {
             return f(self);
         }
 
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         self.element_opacity = opacity;
         let result = f(self);
         self.element_opacity = None;
@@ -2271,7 +2285,7 @@ impl Window {
     /// element offset and prepaint again. See [`List`] for an example. This method should only be
     /// called during the prepaint phase of element drawing.
     pub fn transact<T, U>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, U>) -> Result<T, U> {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         let index = self.prepaint_index();
         let result = f(self);
         if result.is_err() {
@@ -2299,14 +2313,14 @@ impl Window {
     /// that supports this method being called on the elements it contains. This method should only be
     /// called during the prepaint phase of element drawing.
     pub fn request_autoscroll(&mut self, bounds: Bounds<Pixels>) {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         self.requested_autoscroll = Some(bounds);
     }
 
     /// This method can be called from a containing element such as [`List`] to support the autoscroll behavior
     /// described in [`request_autoscroll`].
     pub fn take_autoscroll(&mut self) -> Option<Bounds<Pixels>> {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         self.requested_autoscroll.take()
     }
 
@@ -2349,7 +2363,7 @@ impl Window {
     /// Obtain the current element offset. This method should only be called during the
     /// prepaint phase of element drawing.
     pub fn element_offset(&self) -> Point<Pixels> {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         self.element_offset_stack
             .last()
             .copied()
@@ -2359,13 +2373,13 @@ impl Window {
     /// Obtain the current element opacity. This method should only be called during the
     /// prepaint phase of element drawing.
     pub(crate) fn element_opacity(&self) -> f32 {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         self.element_opacity.unwrap_or(1.0)
     }
 
     /// Obtain the current content mask. This method should only be called during element drawing.
     pub fn content_mask(&self) -> ContentMask<Pixels> {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         self.content_mask_stack
             .last()
             .cloned()
@@ -2402,7 +2416,7 @@ impl Window {
     where
         S: 'static,
     {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
 
         let key = (GlobalElementId(global_id.0.clone()), TypeId::of::<S>());
         self.next_frame
@@ -2485,7 +2499,7 @@ impl Window {
     where
         S: 'static,
     {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
 
         if let Some(global_id) = global_id {
             self.with_element_state(global_id, |state, cx| {
@@ -2515,7 +2529,7 @@ impl Window {
         absolute_offset: Point<Pixels>,
         priority: usize,
     ) {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
         self.next_frame.deferred_draws.push(DeferredDraw {
             current_view: self.current_view(),
@@ -2536,7 +2550,7 @@ impl Window {
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_layer<R>(&mut self, bounds: Bounds<Pixels>, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let content_mask = self.content_mask();
@@ -2565,7 +2579,7 @@ impl Window {
         corner_radii: Corners<Pixels>,
         shadows: &[BoxShadow],
     ) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let content_mask = self.content_mask();
@@ -2593,7 +2607,7 @@ impl Window {
     /// where the circular arcs meet. This will not display well when combined with dashed borders.
     /// Use `Corners::clamp_radii_for_quad_size` if the radii should fit within the bounds.
     pub fn paint_quad(&mut self, quad: PaintQuad) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let content_mask = self.content_mask();
@@ -2614,7 +2628,7 @@ impl Window {
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_path(&mut self, mut path: Path<Pixels>, color: impl Into<Background>) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let content_mask = self.content_mask();
@@ -2636,7 +2650,7 @@ impl Window {
         width: Pixels,
         style: &UnderlineStyle,
     ) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let height = if style.wavy {
@@ -2671,7 +2685,7 @@ impl Window {
         width: Pixels,
         style: &StrikethroughStyle,
     ) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let height = style.thickness;
@@ -2709,7 +2723,7 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
     ) -> Result<()> {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
@@ -2769,7 +2783,7 @@ impl Window {
         glyph_id: GlyphId,
         font_size: Pixels,
     ) -> Result<()> {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
@@ -2825,7 +2839,7 @@ impl Window {
         color: Hsla,
         cx: &App,
     ) -> Result<()> {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
@@ -2877,7 +2891,7 @@ impl Window {
         frame_index: usize,
         grayscale: bool,
     ) -> Result<()> {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let bounds = bounds.scale(scale_factor);
@@ -2924,7 +2938,7 @@ impl Window {
     pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
         use crate::PaintSurface;
 
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let bounds = bounds.scale(scale_factor);
@@ -2963,7 +2977,7 @@ impl Window {
         children: impl IntoIterator<Item = LayoutId>,
         cx: &mut App,
     ) -> LayoutId {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
 
         cx.layout_id_buffer.clear();
         cx.layout_id_buffer.extend(children);
@@ -2991,7 +3005,7 @@ impl Window {
         style: Style,
         measure: F,
     ) -> LayoutId {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
 
         let rem_size = self.rem_size();
         self.layout_engine
@@ -3011,7 +3025,7 @@ impl Window {
         available_space: Size<AvailableSpace>,
         cx: &mut App,
     ) {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
 
         let mut layout_engine = self.layout_engine.take().unwrap();
         layout_engine.compute_layout(layout_id, available_space, self, cx);
@@ -3023,7 +3037,7 @@ impl Window {
     ///
     /// This method should only be called as part of element drawing.
     pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
 
         let mut bounds = self
             .layout_engine
@@ -3041,7 +3055,7 @@ impl Window {
     ///
     /// This method should only be called as part of the prepaint phase of element drawing.
     pub fn insert_hitbox(&mut self, bounds: Bounds<Pixels>, behavior: HitboxBehavior) -> Hitbox {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
 
         let content_mask = self.content_mask();
         let mut id = self.next_hitbox_id;
@@ -3060,7 +3074,7 @@ impl Window {
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn insert_window_control_hitbox(&mut self, area: WindowControlArea, hitbox: Hitbox) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
         self.next_frame.window_control_hitboxes.push((area, hitbox));
     }
 
@@ -3069,7 +3083,7 @@ impl Window {
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn set_key_context(&mut self, context: KeyContext) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
         self.next_frame.dispatch_tree.set_key_context(context);
     }
 
@@ -3078,7 +3092,7 @@ impl Window {
     ///
     /// This method should only be called as part of the prepaint phase of element drawing.
     pub fn set_focus_handle(&mut self, focus_handle: &FocusHandle, _: &App) {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         if focus_handle.is_focused(self) {
             self.next_frame.focus = Some(focus_handle.id);
         }
@@ -3091,13 +3105,13 @@ impl Window {
     /// method eventually when we solve some issues that require us to construct editor elements
     /// directly instead of always using editors via views.
     pub fn set_view_id(&mut self, view_id: EntityId) {
-        self.invalidator.debug_assert_prepaint();
+        self.debug_assert_prepaint();
         self.next_frame.dispatch_tree.set_view_id(view_id);
     }
 
     /// Get the entity ID for the currently rendering view
     pub fn current_view(&self) -> EntityId {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         self.rendered_entity_stack.last().copied().unwrap()
     }
 
@@ -3141,7 +3155,7 @@ impl Window {
         input_handler: impl InputHandler,
         cx: &App,
     ) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         if focus_handle.is_focused(self) {
             let cx = self.to_async(cx);
@@ -3160,7 +3174,7 @@ impl Window {
         &mut self,
         mut handler: impl FnMut(&Event, DispatchPhase, &mut Window, &mut App) + 'static,
     ) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         self.next_frame.mouse_listeners.push(Some(Box::new(
             move |event: &dyn Any, phase: DispatchPhase, window: &mut Window, cx: &mut App| {
@@ -3183,7 +3197,7 @@ impl Window {
         &mut self,
         listener: impl Fn(&Event, DispatchPhase, &mut Window, &mut App) + 'static,
     ) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         self.next_frame.dispatch_tree.on_key_event(Rc::new(
             move |event: &dyn Any, phase, window: &mut Window, cx: &mut App| {
@@ -3204,7 +3218,7 @@ impl Window {
         &mut self,
         listener: impl Fn(&ModifiersChangedEvent, &mut Window, &mut App) + 'static,
     ) {
-        self.invalidator.debug_assert_paint();
+        self.debug_assert_paint();
 
         self.next_frame.dispatch_tree.on_modifiers_changed(Rc::new(
             move |event: &ModifiersChangedEvent, window: &mut Window, cx: &mut App| {
@@ -3425,6 +3439,7 @@ impl Window {
             return;
         }
 
+        // todo! avoid taking by instead iterating?
         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
 
         // Capture phase, events bubble from back to front. Handlers for this phase are used for
@@ -3465,7 +3480,8 @@ impl Window {
     }
 
     fn dispatch_key_event(&mut self, event: &dyn Any, cx: &mut App) {
-        if self.invalidator.is_dirty() {
+        if self.dirty {
+            // todo! limit this draw to just what's needed?
             self.draw(cx);
         }
 
@@ -4162,7 +4178,7 @@ impl Window {
         &mut self,
         path: crate::InspectorElementPath,
     ) -> crate::InspectorElementId {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         let path = Rc::new(path);
         let next_instance_id = self
             .next_frame
@@ -4207,7 +4223,7 @@ impl Window {
         inspector_id: Option<&crate::InspectorElementId>,
         cx: &App,
     ) {
-        self.invalidator.debug_assert_paint_or_prepaint();
+        self.debug_assert_paint_or_prepaint();
         if !self.is_inspector_picking(cx) {
             return;
         }

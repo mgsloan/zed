@@ -2,7 +2,6 @@ use std::{
     any::{TypeId, type_name},
     cell::{BorrowMutError, Ref, RefCell, RefMut},
     marker::PhantomData,
-    mem,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     rc::{Rc, Weak},
@@ -18,7 +17,7 @@ use futures::{
     future::{LocalBoxFuture, Shared},
 };
 use parking_lot::RwLock;
-use slotmap::SlotMap;
+use slotmap::{ApproximateSecondarySet, SlotMap};
 
 pub use async_context::*;
 use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
@@ -40,7 +39,7 @@ use crate::{
     PlatformDisplay, PlatformKeyboardLayout, Point, PromptBuilder, PromptButton, PromptHandle,
     PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource,
     SharedString, SubscriberSet, Subscription, SvgRenderer, Task, TextSystem, Window,
-    WindowAppearance, WindowHandle, WindowId, WindowInvalidator,
+    WindowAppearance, WindowHandle, WindowId,
     colors::{Colors, GlobalColors},
     current_platform, hash, init_app_menus,
 };
@@ -256,6 +255,7 @@ pub struct App {
     http_client: Arc<dyn HttpClient>,
     pub(crate) globals_by_type: FxHashMap<TypeId, Box<dyn Any>>,
     pub(crate) entities: EntityMap,
+    pub(crate) entities_notified_since_last_draw: ApproximateSecondarySet<EntityId>,
     pub(crate) window_update_stack: Vec<WindowId>,
     pub(crate) new_entity_observers: SubscriberSet<TypeId, NewEntityListener>,
     pub(crate) windows: SlotMap<WindowId, Option<Window>>,
@@ -280,9 +280,6 @@ pub struct App {
     pub(crate) layout_id_buffer: Vec<LayoutId>, // We recycle this memory across layout requests.
     pub(crate) propagate_event: bool,
     pub(crate) prompt_builder: Option<PromptBuilder>,
-    pub(crate) window_invalidators_by_entity:
-        FxHashMap<EntityId, FxHashMap<WindowId, WindowInvalidator>>,
-    pub(crate) tracked_entities: FxHashMap<WindowId, FxHashSet<EntityId>>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) inspector_renderer: Option<crate::InspectorRenderer>,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -327,6 +324,7 @@ impl App {
                 http_client,
                 globals_by_type: FxHashMap::default(),
                 entities,
+                entities_notified_since_last_draw: ApproximateSecondarySet::new(),
                 new_entity_observers: SubscriberSet::new(),
                 windows: SlotMap::with_key(),
                 window_update_stack: Vec::new(),
@@ -339,8 +337,6 @@ impl App {
                 pending_notifications: FxHashSet::default(),
                 pending_global_notifications: FxHashSet::default(),
                 observers: SubscriberSet::new(),
-                tracked_entities: FxHashMap::default(),
-                window_invalidators_by_entity: FxHashMap::default(),
                 event_listeners: SubscriberSet::new(),
                 release_listeners: SubscriberSet::new(),
                 keystroke_observers: SubscriberSet::new(),
@@ -475,42 +471,12 @@ impl App {
     pub(crate) fn detect_accessed_entities<R>(
         &mut self,
         callback: impl FnOnce(&mut App) -> R,
-    ) -> (R, FxHashSet<EntityId>) {
+    ) -> (R, ApproximateSecondarySet<EntityId>) {
         let accessed_entities_start = self.entities.accessed_entities.borrow().clone();
         let result = callback(self);
-        let accessed_entities_end = self.entities.accessed_entities.borrow().clone();
-        let entities_accessed_in_callback = accessed_entities_end
-            .difference(&accessed_entities_start)
-            .copied()
-            .collect::<FxHashSet<EntityId>>();
-        (result, entities_accessed_in_callback)
-    }
-
-    pub(crate) fn record_entities_accessed(
-        &mut self,
-        window_handle: AnyWindowHandle,
-        invalidator: WindowInvalidator,
-        entities: &FxHashSet<EntityId>,
-    ) {
-        let mut tracked_entities =
-            std::mem::take(self.tracked_entities.entry(window_handle.id).or_default());
-        for entity in tracked_entities.iter() {
-            self.window_invalidators_by_entity
-                .entry(*entity)
-                .and_modify(|windows| {
-                    windows.remove(&window_handle.id);
-                });
-        }
-        for entity in entities.iter() {
-            self.window_invalidators_by_entity
-                .entry(*entity)
-                .or_default()
-                .insert(window_handle.id, invalidator.clone());
-        }
-        tracked_entities.clear();
-        tracked_entities.extend(entities.iter().copied());
-        self.tracked_entities
-            .insert(window_handle.id, tracked_entities);
+        let mut accessed_entities = self.entities.accessed_entities.borrow().clone();
+        accessed_entities.difference_with(&accessed_entities_start);
+        (result, accessed_entities)
     }
 
     pub(crate) fn new_observer(&mut self, key: EntityId, value: Handler) -> Subscription {
@@ -597,6 +563,8 @@ impl App {
     /// Returns handles to all open windows in the application.
     /// Each handle could be downcast to a handle typed for the root view of that window.
     /// To find all windows of a given type, you could filter on
+    ///
+    /// todo! more "with" patterned functions to avoid collecting to vec?
     pub fn windows(&self) -> Vec<AnyWindowHandle> {
         self.windows
             .keys()
@@ -899,13 +867,15 @@ impl App {
                     }
                 }
             } else {
+                // todo! building with test-support makes gpui nonfunctional
                 #[cfg(any(test, feature = "test-support"))]
                 for window in self
                     .windows
                     .values()
                     .filter_map(|window| {
                         let window = window.as_ref()?;
-                        window.invalidator.is_dirty().then_some(window.handle)
+                        // todo! Will this be true with new scheme?
+                        window.dirty.then_some(window.handle)
                     })
                     .collect::<Vec<_>>()
                 {
@@ -987,7 +957,7 @@ impl App {
         for window in self.windows.values_mut() {
             if let Some(window) = window.as_mut() {
                 window.refreshing = true;
-                window.invalidator.set_dirty(true);
+                window.dirty = true;
             }
         }
     }
@@ -1651,22 +1621,9 @@ impl App {
 
     /// Tell GPUI that an entity has changed and observers of it should be notified.
     pub fn notify(&mut self, entity_id: EntityId) {
-        let window_invalidators = mem::take(
-            self.window_invalidators_by_entity
-                .entry(entity_id)
-                .or_default(),
-        );
-
-        let mut is_drawing = false;
-        for invalidator in window_invalidators.values() {
-            is_drawing = is_drawing || !invalidator.invalidate_view(entity_id)
-        }
-        if !is_drawing {
-            self.push_effect(Effect::Notify { emitter: entity_id });
-        }
-
-        self.window_invalidators_by_entity
-            .insert(entity_id, window_invalidators);
+        // todo! how to skip notifies during draw?
+        self.entities_notified_since_last_draw.insert(entity_id);
+        self.push_effect(Effect::Notify { emitter: entity_id });
     }
 
     /// Returns the name for this [`App`].

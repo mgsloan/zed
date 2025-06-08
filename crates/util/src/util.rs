@@ -418,15 +418,18 @@ pub fn merge_non_null_json_value_into(source: serde_json::Value, target: &mut se
     }
 }
 
-pub fn measure<R>(label: &str, f: impl FnOnce() -> R) -> R {
+pub fn is_measuring() -> bool {
     static ZED_MEASUREMENTS: OnceLock<bool> = OnceLock::new();
     let zed_measurements = ZED_MEASUREMENTS.get_or_init(|| {
         env::var("ZED_MEASUREMENTS")
             .map(|measurements| measurements == "1" || measurements == "true")
             .unwrap_or(false)
     });
+    *zed_measurements
+}
 
-    if *zed_measurements {
+pub fn measure<R>(label: &str, f: impl FnOnce() -> R) -> R {
+    if is_measuring() {
         let start = Instant::now();
         let result = f();
         let elapsed = start.elapsed();

@@ -5559,7 +5559,7 @@ dependencies = [
  "fontconfig-parser",
  "log",
  "memmap2",
- "slotmap",
+ "slotmap 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "tinyvec",
  "ttf-parser 0.20.0",
 ]
@@ -5573,7 +5573,7 @@ dependencies = [
  "fontconfig-parser",
  "log",
  "memmap2",
- "slotmap",
+ "slotmap 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "tinyvec",
  "ttf-parser 0.25.1",
 ]
@@ -6952,7 +6952,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d51fa363f025f5c111e03f13eda21162faeacb6911fe8caa0c0349f9cf0c4483"
 dependencies = [
  "js-sys",
- "slotmap",
+ "slotmap 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -7097,7 +7097,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "slotmap",
+ "slotmap 1.0.7",
  "smallvec",
  "smol",
  "strum 0.27.1",
@@ -14613,6 +14613,14 @@ dependencies = [
 [[package]]
 name = "slotmap"
 version = "1.0.7"
+dependencies = [
+ "bit-set 0.8.0",
+ "version_check",
+]
+
+[[package]]
+name = "slotmap"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbff4acf519f630b3a3ddcfaea6c06b42174d9a44bc70c620e9ed1649d58b82a"
 dependencies = [
@@ -15551,7 +15559,7 @@ dependencies = [
  "grid",
  "num-traits",
  "serde",
- "slotmap",
+ "slotmap 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

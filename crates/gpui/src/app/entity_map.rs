@@ -1,9 +1,8 @@
 use crate::{App, AppContext, VisualContext, Window, seal::Sealed};
 use anyhow::{Context as _, Result};
-use collections::FxHashSet;
 use derive_more::{Deref, DerefMut};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use slotmap::{KeyData, SecondaryMap, SlotMap};
+use slotmap::{ApproximateSecondarySet, KeyData, SecondaryMap, SlotMap};
 #[cfg(debug_assertions)]
 use std::panic::Location;
 use std::{
@@ -58,7 +57,7 @@ impl Display for EntityId {
 
 pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, EntityData>,
-    pub accessed_entities: RefCell<FxHashSet<EntityId>>,
+    pub accessed_entities: RefCell<ApproximateSecondarySet<EntityId>>,
     ref_counts: Arc<RwLock<EntityRefCounts>>,
 }
 
@@ -81,7 +80,7 @@ impl EntityMap {
     pub fn new() -> Self {
         Self {
             entities: SecondaryMap::new(),
-            accessed_entities: RefCell::new(FxHashSet::default()),
+            accessed_entities: RefCell::new(ApproximateSecondarySet::new()),
             ref_counts: Arc::new(RwLock::new(EntityRefCounts {
                 counts: SlotMap::with_key(),
                 dropped_entity_ids: Vec::new(),
@@ -166,13 +165,13 @@ impl EntityMap {
         );
     }
 
-    pub fn extend_accessed(&mut self, entities: &FxHashSet<EntityId>) {
-        self.accessed_entities
-            .borrow_mut()
-            .extend(entities.iter().copied());
+    pub fn extend_accessed(&mut self, entities: &ApproximateSecondarySet<EntityId>) {
+        self.accessed_entities.borrow_mut().union_with(entities);
     }
 
     pub fn clear_accessed(&mut self) {
+        dbg!(self.entities.len());
+        dbg!(self.accessed_entities.borrow().len());
         self.accessed_entities.borrow_mut().clear();
     }
 
@@ -190,7 +189,7 @@ impl EntityMap {
                     0,
                     "dropped an entity that was referenced"
                 );
-                accessed_entities.remove(&entity_id);
+                accessed_entities.remove(entity_id);
                 // If the EntityId was allocated with `Context::reserve`,
                 // the entity may not have been inserted.
                 Some((entity_id, self.entities.remove(entity_id)?.value))
@@ -419,10 +418,9 @@ impl Debug for AnyEntity {
 
 /// A strong, well typed reference to a struct which is managed
 /// by GPUI
-#[derive(Deref, DerefMut)]
+#[derive(Deref)]
 pub struct Entity<T> {
     #[deref]
-    #[deref_mut]
     pub(crate) any_entity: AnyEntity,
     pub(crate) entity_type: PhantomData<T>,
 }
@@ -727,10 +725,9 @@ impl PartialOrd for AnyWeakEntity {
 }
 
 /// A weak reference to a entity of the given type.
-#[derive(Deref, DerefMut)]
+#[derive(Deref)]
 pub struct WeakEntity<T> {
     #[deref]
-    #[deref_mut]
     any_entity: AnyWeakEntity,
     entity_type: PhantomData<T>,
 }

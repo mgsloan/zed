@@ -581,6 +581,7 @@ impl DispatchTree {
         focus_path
     }
 
+    // todo! remove?
     pub fn view_path(&self, view_id: EntityId) -> SmallVec<[EntityId; 8]> {
         let mut view_path: SmallVec<[EntityId; 8]> = SmallVec::new();
         let mut current_node_id = self.view_node_ids.get(&view_id).copied();

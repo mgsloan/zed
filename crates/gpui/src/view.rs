@@ -5,8 +5,8 @@ use crate::{
 };
 use crate::{Empty, Window};
 use anyhow::Result;
-use collections::FxHashSet;
 use refineable::Refineable;
+use slotmap::ApproximateSecondarySet;
 use std::mem;
 use std::rc::Rc;
 use std::{any::TypeId, fmt, ops::Range};
@@ -15,7 +15,7 @@ struct AnyViewState {
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     cache_key: ViewCacheKey,
-    accessed_entities: FxHashSet<EntityId>,
+    accessed_entities: ApproximateSecondarySet<EntityId>,
 }
 
 #[derive(Default)]
@@ -206,12 +206,15 @@ impl Element for AnyView {
                     let text_style = window.text_style();
 
                     if let Some(mut element_state) = element_state {
-                        if element_state.cache_key.bounds == bounds
+                        if !window.refreshing
+                            && element_state.cache_key.bounds == bounds
                             && element_state.cache_key.content_mask == content_mask
                             && element_state.cache_key.text_style == text_style
-                            && !window.dirty_views.contains(&self.entity_id())
-                            && !window.refreshing
+                            && window
+                                .dirty_views
+                                .is_disjoint(&element_state.accessed_entities)
                         {
+                            dbg!("USING CACHE");
                             let prepaint_start = window.prepaint_index();
                             window.reuse_prepaint(element_state.prepaint_range.clone());
                             cx.entities
@@ -222,9 +225,11 @@ impl Element for AnyView {
                             return (None, element_state);
                         }
                     }
+                    dbg!("NO CACHE");
 
                     let refreshing = mem::replace(&mut window.refreshing, true);
                     let prepaint_start = window.prepaint_index();
+                    // todo! write into element_state accessed_entities
                     let (mut element, accessed_entities) = cx.detect_accessed_entities(|cx| {
                         let mut element = (self.render)(self, window, cx);
                         element.layout_as_root(bounds.size.into(), window, cx);

@@ -37,7 +37,7 @@ impl<'a, T: 'static> Context<'a, T> {
 
     /// Returns a handle to the entity belonging to this context.
     pub fn entity(&self) -> Entity<T> {
-        self.weak_entity()
+        self.entity_state
             .upgrade()
             .expect("The entity must be alive if we have a entity context")
     }
