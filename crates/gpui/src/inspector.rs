@@ -60,6 +60,7 @@ mod conditional {
     pub struct Inspector {
         active_element: Option<InspectedElement>,
         pub(crate) pick_depth: Option<f32>,
+        pub(crate) show_cache_misses: bool,
     }
 
     struct InspectedElement {
@@ -81,6 +82,7 @@ mod conditional {
             Self {
                 active_element: None,
                 pick_depth: Some(0.0),
+                show_cache_misses: false,
             }
         }
 

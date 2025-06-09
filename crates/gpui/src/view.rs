@@ -262,7 +262,7 @@ impl Element for AnyView {
         &mut self,
         global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         element: &mut Self::PrepaintState,
         window: &mut Window,
@@ -279,6 +279,10 @@ impl Element for AnyView {
                         let paint_start = window.paint_index();
 
                         if let Some(element) = element {
+                            #[cfg(any(feature = "inspector", debug_assertions))]
+                            {
+                                window.insert_inspector_quad(bounds)
+                            }
                             let refreshing = mem::replace(&mut window.refreshing, true);
                             element.paint(window, cx);
                             window.refreshing = refreshing;

@@ -4235,6 +4235,9 @@ impl Window {
     }
 
     #[cfg(any(feature = "inspector", debug_assertions))]
+    pub fn insert_inspector_quad(&mut self, )
+
+    #[cfg(any(feature = "inspector", debug_assertions))]
     fn paint_inspector_hitbox(&mut self, cx: &App) {
         if let Some(inspector) = self.inspector.as_ref() {
             let inspector = inspector.read(cx);
