@@ -882,6 +882,7 @@ impl Window {
                         for window in cx.windows().into_iter() {
                             // todo! variant that doesn't update entity.
                             cx.update_window(window, |_, window, cx| {
+                                dbg!(cx.entities_notified_since_last_draw.len());
                                 window
                                     .dirty_views
                                     .union_with(&cx.entities_notified_since_last_draw);
@@ -889,11 +890,14 @@ impl Window {
                                 if !window.dirty
                                     && !window.dirty_views.is_disjoint(&window.tracked_entities)
                                 {
+                                    dbg!("WINDOW DIRTY");
                                     window.dirty = true;
                                 }
                             })
                             .ok();
                         }
+                        dbg!("MAIN CLEAR NOTIFY");
+                        Self::debug_entitites_notified(cx);
                         cx.entities_notified_since_last_draw.clear();
                     }
                     cx.update_window(handle, |_, window, cx| {
@@ -1817,7 +1821,15 @@ impl Window {
             .clone_from(&cx.entities.accessed_entities.borrow());
         // todo! how to handle this now? Ideally could warn when entities are notifying during
         // render. But there are other callers of draw.
+        dbg!("CLEARING NOTIFY");
+        Self::debug_entitites_notified(cx);
         cx.entities_notified_since_last_draw.clear();
+    }
+
+    fn debug_entitites_notified(cx: &App) {
+        for slot_index in cx.entities_notified_since_last_draw.iter() {
+            dbg!(cx.entities.debug_entity_slot_index(slot_index));
+        }
     }
 
     #[track_caller]

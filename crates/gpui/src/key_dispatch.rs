@@ -69,10 +69,8 @@ pub(crate) struct DispatchNodeId(usize);
 pub(crate) struct DispatchTree {
     node_stack: Vec<DispatchNodeId>,
     pub(crate) context_stack: Vec<KeyContext>,
-    view_stack: Vec<EntityId>,
     nodes: Vec<DispatchNode>,
     focusable_node_ids: FxHashMap<FocusId, DispatchNodeId>,
-    view_node_ids: FxHashMap<EntityId, DispatchNodeId>,
     keymap: Rc<RefCell<Keymap>>,
     action_registry: Rc<ActionRegistry>,
 }
@@ -84,7 +82,6 @@ pub(crate) struct DispatchNode {
     pub modifiers_changed_listeners: Vec<ModifiersChangedListener>,
     pub context: Option<KeyContext>,
     pub focus_id: Option<FocusId>,
-    view_id: Option<EntityId>,
     parent: Option<DispatchNodeId>,
 }
 
@@ -138,10 +135,8 @@ impl DispatchTree {
         Self {
             node_stack: Vec::new(),
             context_stack: Vec::new(),
-            view_stack: Vec::new(),
             nodes: Vec::new(),
             focusable_node_ids: FxHashMap::default(),
-            view_node_ids: FxHashMap::default(),
             keymap,
             action_registry,
         }
@@ -150,10 +145,8 @@ impl DispatchTree {
     pub fn clear(&mut self) {
         self.node_stack.clear();
         self.context_stack.clear();
-        self.view_stack.clear();
         self.nodes.clear();
         self.focusable_node_ids.clear();
-        self.view_node_ids.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -181,9 +174,6 @@ impl DispatchTree {
         if self.node_stack.last().copied() == next_node_parent {
             self.node_stack.push(node_id);
             let active_node = &self.nodes[node_id.0];
-            if let Some(view_id) = active_node.view_id {
-                self.view_stack.push(view_id)
-            }
             if let Some(context) = active_node.context.clone() {
                 self.context_stack.push(context);
             }
@@ -196,15 +186,11 @@ impl DispatchTree {
                 if let Some(context) = node.context.clone() {
                     self.context_stack.push(context);
                 }
-                if node.view_id.is_some() {
-                    self.view_stack.push(node.view_id.unwrap());
-                }
                 self.node_stack.push(node_id);
                 current_node_id = node.parent;
             }
 
             self.context_stack.reverse();
-            self.view_stack.reverse();
             self.node_stack.reverse();
         }
     }
@@ -220,22 +206,13 @@ impl DispatchTree {
         self.focusable_node_ids.insert(focus_id, node_id);
     }
 
-    pub fn set_view_id(&mut self, view_id: EntityId) {
-        if self.view_stack.last().copied() != Some(view_id) {
-            let node_id = *self.node_stack.last().unwrap();
-            self.nodes[node_id.0].view_id = Some(view_id);
-            self.view_node_ids.insert(view_id, node_id);
-            self.view_stack.push(view_id);
-        }
-    }
+    // todo! remove
+    pub fn set_view_id(&mut self, view_id: EntityId) {}
 
     pub fn pop_node(&mut self) {
         let node = &self.nodes[self.active_node_id().unwrap().0];
         if node.context.is_some() {
             self.context_stack.pop();
-        }
-        if node.view_id.is_some() {
-            self.view_stack.pop();
         }
         self.node_stack.pop();
     }
@@ -247,9 +224,6 @@ impl DispatchTree {
         }
         if let Some(focus_id) = source.focus_id {
             self.set_focus_id(focus_id);
-        }
-        if let Some(view_id) = source.view_id {
-            self.set_view_id(view_id);
         }
 
         let target = self.active_node();
@@ -308,10 +282,6 @@ impl DispatchTree {
         for node in &self.nodes[index..] {
             if let Some(focus_id) = node.focus_id {
                 self.focusable_node_ids.remove(&focus_id);
-            }
-
-            if let Some(view_id) = node.view_id {
-                self.view_node_ids.remove(&view_id);
             }
         }
         self.nodes.truncate(index);
@@ -579,21 +549,6 @@ impl DispatchTree {
         }
         focus_path.reverse(); // Reverse the path so it goes from the root to the focused node.
         focus_path
-    }
-
-    // todo! remove?
-    pub fn view_path(&self, view_id: EntityId) -> SmallVec<[EntityId; 8]> {
-        let mut view_path: SmallVec<[EntityId; 8]> = SmallVec::new();
-        let mut current_node_id = self.view_node_ids.get(&view_id).copied();
-        while let Some(node_id) = current_node_id {
-            let node = self.node(node_id);
-            if let Some(view_id) = node.view_id {
-                view_path.push(view_id);
-            }
-            current_node_id = node.parent;
-        }
-        view_path.reverse(); // Reverse the path so it goes from the root to the view node.
-        view_path
     }
 
     pub fn node(&self, node_id: DispatchNodeId) -> &DispatchNode {

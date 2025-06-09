@@ -1,11 +1,24 @@
 use gpui::{
-    App, Application, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px,
-    size,
+    AnyView, App, Application, Bounds, Context, Entity, StyleRefinement, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, size,
 };
 
-struct Scrollable {}
+struct Scrollable {
+    inner: Entity<Inner>,
+}
 
 impl Render for Scrollable {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .h(px(1000.0))
+            .child(AnyView::from(self.inner.clone()).cached(StyleRefinement::default().size_full()))
+    }
+}
+
+struct Inner {}
+
+impl Render for Inner {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
@@ -52,7 +65,12 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| Scrollable {}),
+            |_, cx| {
+                cx.new(|cx| Inner {})
+                /* cx.new(|cx| Scrollable {
+                    inner: cx.new(|_| Inner {}),
+                })*/
+            },
         )
         .unwrap();
         cx.activate(true);
