@@ -1977,6 +1977,7 @@ impl Interactivity {
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
+                    dbg!(cx.entities.debug_entity_id(current_view));
                     cx.notify(current_view);
                 }
             });

@@ -2,7 +2,7 @@ use crate::{App, AppContext, VisualContext, Window, seal::Sealed};
 use anyhow::{Context as _, Result};
 use derive_more::{Deref, DerefMut};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use slotmap::{ApproximateSecondarySet, KeyData, SecondaryMap, SlotMap};
+use slotmap::{ApproximateSecondarySet, KeyData, SecondaryMap, SlotIndex, SlotMap};
 #[cfg(debug_assertions)]
 use std::panic::Location;
 use std::{
@@ -201,6 +201,16 @@ impl EntityMap {
     pub fn debug_entity_id(&self, entity_id: EntityId) -> Option<DebugEntityData> {
         self.entities
             .get(entity_id)
+            .map(|entity_data| DebugEntityData { entity_data })
+    }
+
+    #[allow(dead_code)]
+    pub fn debug_entity_slot_index(
+        &self,
+        slot_index: SlotIndex<EntityId>,
+    ) -> Option<DebugEntityData> {
+        self.entities
+            .get_via_slot_index(slot_index)
             .map(|entity_data| DebugEntityData { entity_data })
     }
 }
