@@ -56,11 +56,17 @@ struct PendingWork<'a> {
 }
 
 struct Content {
-    icon: Option<gpui::AnyElement>,
+    icon: Option<(IconName, IconAnimation)>,
+    icon_rotate_animation: bool,
     message: String,
     on_click:
         Option<Arc<dyn Fn(&mut ActivityIndicator, &mut Window, &mut Context<ActivityIndicator>)>>,
     tooltip_message: Option<String>,
+}
+
+enum IconAnimation {
+    None,
+    Rotate,
 }
 
 impl ActivityIndicator {
@@ -251,11 +257,7 @@ impl ActivityIndicator {
         if let Some((abs_path, error)) = self.pending_environment_errors(cx).next() {
             let abs_path = abs_path.clone();
             return Some(Content {
-                icon: Some(
-                    Icon::new(IconName::Warning)
-                        .size(IconSize::Small)
-                        .into_any_element(),
-                ),
+                icon: Some((IconName::Warning, IconAnimation::None)),
                 message: error.0.clone(),
                 on_click: Some(Arc::new(move |this, window, cx| {
                     this.project.update(cx, |project, cx| {
@@ -295,16 +297,7 @@ impl ActivityIndicator {
             }
 
             return Some(Content {
-                icon: Some(
-                    Icon::new(IconName::ArrowCircle)
-                        .size(IconSize::Small)
-                        .with_animation(
-                            "arrow-circle",
-                            Animation::new(Duration::from_secs(2)).repeat(),
-                            |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
-                        )
-                        .into_any_element(),
-                ),
+                icon: Some((IconName::ArrowCircle, IconAnimation::Rotate)),
                 message,
                 on_click: Some(Arc::new(Self::toggle_language_server_work_context_menu)),
                 tooltip_message: None,
@@ -320,16 +313,7 @@ impl ActivityIndicator {
             .find(|s| !s.read(cx).is_started())
         {
             return Some(Content {
-                icon: Some(
-                    Icon::new(IconName::ArrowCircle)
-                        .size(IconSize::Small)
-                        .with_animation(
-                            "arrow-circle",
-                            Animation::new(Duration::from_secs(2)).repeat(),
-                            |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
-                        )
-                        .into_any_element(),
-                ),
+                icon: Some((IconName::ArrowCircle, IconAnimation::Rotate)),
                 message: format!("Debug: {}", session.read(cx).adapter()),
                 tooltip_message: Some(session.read(cx).label().to_string()),
                 on_click: None,
@@ -346,18 +330,7 @@ impl ActivityIndicator {
         if let Some(job_info) = current_job {
             if Instant::now() - job_info.start >= GIT_OPERATION_DELAY {
                 return Some(Content {
-                    icon: Some(
-                        Icon::new(IconName::ArrowCircle)
-                            .size(IconSize::Small)
-                            .with_animation(
-                                "arrow-circle",
-                                Animation::new(Duration::from_secs(2)).repeat(),
-                                |icon, delta| {
-                                    icon.transform(Transformation::rotate(percentage(delta)))
-                                },
-                            )
-                            .into_any_element(),
-                    ),
+                    icon: Some((IconName::ArrowCircle, IconAnimation::Rotate)),
                     message: job_info.message.into(),
                     on_click: None,
                     tooltip_message: None,
@@ -380,11 +353,7 @@ impl ActivityIndicator {
 
         if !downloading.is_empty() {
             return Some(Content {
-                icon: Some(
-                    Icon::new(IconName::Download)
-                        .size(IconSize::Small)
-                        .into_any_element(),
-                ),
+                icon: Some((IconName::Download, IconAnimation::None)),
                 message: format!(
                     "Downloading {}...",
                     downloading.iter().map(|name| name.as_ref()).fold(
@@ -409,11 +378,7 @@ impl ActivityIndicator {
 
         if !checking_for_update.is_empty() {
             return Some(Content {
-                icon: Some(
-                    Icon::new(IconName::Download)
-                        .size(IconSize::Small)
-                        .into_any_element(),
-                ),
+                icon: Some((IconName::Download, IconAnimation::None)),
                 message: format!(
                     "Checking for updates to {}...",
                     checking_for_update.iter().map(|name| name.as_ref()).fold(
@@ -438,11 +403,7 @@ impl ActivityIndicator {
 
         if !failed.is_empty() {
             return Some(Content {
-                icon: Some(
-                    Icon::new(IconName::Warning)
-                        .size(IconSize::Small)
-                        .into_any_element(),
-                ),
+                icon: Some((IconName::Warning, IconAnimation::None)),
                 message: format!(
                     "Failed to run {}. Click to show error.",
                     failed
@@ -466,11 +427,7 @@ impl ActivityIndicator {
         // Show any formatting failure
         if let Some(failure) = self.project.read(cx).last_formatting_failure(cx) {
             return Some(Content {
-                icon: Some(
-                    Icon::new(IconName::Warning)
-                        .size(IconSize::Small)
-                        .into_any_element(),
-                ),
+                icon: Some((IconName::Warning, IconAnimation::None)),
                 message: format!("Formatting failed: {}. Click to see logs.", failure),
                 on_click: Some(Arc::new(|indicator, window, cx| {
                     indicator.project.update(cx, |project, cx| {
@@ -486,10 +443,9 @@ impl ActivityIndicator {
         if let Some(updater) = &self.auto_updater {
             return match &updater.read(cx).status() {
                 AutoUpdateStatus::Checking => Some(Content {
-                    icon: Some(
-                        Icon::new(IconName::Download)
-                            .size(IconSize::Small)
-                            .into_any_element(),
+                    icon: Some((
+                        IconName::Download,
+                        IconAnimation::None,
                     ),
                     message: "Checking for Zed updates…".to_string(),
                     on_click: Some(Arc::new(|this, window, cx| {
@@ -498,10 +454,9 @@ impl ActivityIndicator {
                     tooltip_message: None,
                 }),
                 AutoUpdateStatus::Downloading { version } => Some(Content {
-                    icon: Some(
-                        Icon::new(IconName::Download)
-                            .size(IconSize::Small)
-                            .into_any_element(),
+                    icon: Some((
+                        IconName::Download,
+                        IconAnimation::None,
                     ),
                     message: "Downloading Zed update…".to_string(),
                     on_click: Some(Arc::new(|this, window, cx| {
@@ -510,11 +465,10 @@ impl ActivityIndicator {
                     tooltip_message: Some(Self::version_tooltip_message(&version)),
                 }),
                 AutoUpdateStatus::Installing { version } => Some(Content {
-                    icon: Some(
-                        Icon::new(IconName::Download)
-                            .size(IconSize::Small)
-                            .into_any_element(),
-                    ),
+                    icon: Some((
+                        IconName::Download,
+                        IconAnimation::None,
+                    )),
                     message: "Installing Zed update…".to_string(),
                     on_click: Some(Arc::new(|this, window, cx| {
                         this.dismiss_error_message(&DismissErrorMessage, window, cx)
@@ -536,11 +490,10 @@ impl ActivityIndicator {
                     tooltip_message: Some(Self::version_tooltip_message(&version)),
                 }),
                 AutoUpdateStatus::Errored => Some(Content {
-                    icon: Some(
-                        Icon::new(IconName::Warning)
-                            .size(IconSize::Small)
-                            .into_any_element(),
-                    ),
+                    icon: Some((
+                        IconName::Warning,
+                        IconAnimation::None,
+                    )),
                     message: "Auto update failed".to_string(),
                     on_click: Some(Arc::new(|this, window, cx| {
                         this.dismiss_error_message(&DismissErrorMessage, window, cx)
@@ -556,11 +509,10 @@ impl ActivityIndicator {
         {
             if let Some(extension_id) = extension_store.outstanding_operations().keys().next() {
                 return Some(Content {
-                    icon: Some(
-                        Icon::new(IconName::Download)
-                            .size(IconSize::Small)
-                            .into_any_element(),
-                    ),
+                    icon: Some((
+                        IconName::Download,
+                        IconAnimation::None,
+                    )),
                     message: format!("Updating {extension_id} extension…"),
                     on_click: Some(Arc::new(|this, window, cx| {
                         this.dismiss_error_message(&DismissErrorMessage, window, cx)
@@ -615,6 +567,19 @@ impl Render for ActivityIndicator {
                         h_flex()
                             .id("activity-indicator-status")
                             .gap_2()
+                            .when_some(content.icon, |parent, icon|
+                                parent.child(
+                                    Icon::new(icon)
+                                        .size(IconSize::Small)
+                                        .when(content.icon_rotate_animation, |icon|
+                                            icon.with_animation(
+                                                "icon-rotate",
+                                                Animation::new(Duration::from_secs(2)).repeat(),
+                                                |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
+                                            )
+                                        )
+                                        .into_any_element()
+                            ))
                             .children(content.icon)
                             .map(|button| {
                                 if truncate_content {
