@@ -1,6 +1,7 @@
 //! # logger
 pub use log as log_impl;
 
+pub mod bug;
 mod env_config;
 pub mod filter;
 pub mod sink;
@@ -107,6 +108,24 @@ macro_rules! log {
                 scope: logger.scope,
                 level,
                 message: &format_args!($($arg)+),
+                module_path: Some(module_path!()),
+            });
+        }
+    }
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! log_with_prefix {
+    ($logger:expr, $level:expr, $prefix:expr, $($arg:tt)+) => {
+        let level = $level;
+        let logger = $logger;
+        let enabled = $crate::filter::is_scope_enabled(&logger.scope, Some(module_path!()), level);
+        if enabled {
+            $crate::sink::submit($crate::sink::Record {
+                scope: logger.scope,
+                level,
+                message: &format_args!("{}{}", $prefix, format_args!($($arg)+)),
                 module_path: Some(module_path!()),
             });
         }

@@ -360,8 +360,8 @@ Error: Running Zed as root or via sudo is unsupported.
 
         release_channel::init(app_version, cx);
         gpui_tokio::init(cx);
-        if let Some(app_commit_sha) = app_commit_sha {
-            AppCommitSha::set_global(app_commit_sha, cx);
+        if let Some(app_commit_sha) = app_commit_sha.as_ref() {
+            AppCommitSha::set_global(app_commit_sha.clone(), cx);
         }
         settings::init(cx);
         zlog_settings::init(cx);
@@ -407,8 +407,18 @@ Error: Running Zed as root or via sudo is unsupported.
         extension::init(cx);
         let extension_host_proxy = ExtensionHostProxy::global(cx);
 
+        // todo! move this earlier?
         let client = Client::production(cx);
         cx.set_http_client(client.http_client());
+        reliability::init_bug_handler(
+            client.http_client(),
+            app_version,
+            app_commit_sha,
+            system_id.as_ref().map(|id| id.to_string()),
+            installation_id.as_ref().map(|id| id.to_string()),
+            session_id.clone(),
+        );
+
         let mut languages = LanguageRegistry::new(cx.background_executor().clone());
         languages.set_language_server_download_dir(paths::languages_dir().clone());
         let languages = Arc::new(languages);

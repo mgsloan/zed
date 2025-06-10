@@ -174,6 +174,7 @@ fn init_panic_hook() {
             system_id: None,            // Set on SSH client
             installation_id: None,      // Set on SSH client
             session_id: "".to_string(), // Set on SSH client
+            is_bug: false,
         };
 
         if let Some(panic_data_json) = serde_json::to_string(&panic_data).log_err() {

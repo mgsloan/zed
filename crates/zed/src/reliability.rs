@@ -8,7 +8,7 @@ use gpui::{App, AppContext as _, SemanticVersion};
 use http_client::{self, HttpClient, HttpClientWithUrl, HttpRequestExt, Method};
 use paths::{crashes_dir, crashes_retired_dir};
 use project::Project;
-use release_channel::{AppCommitSha, RELEASE_CHANNEL, ReleaseChannel};
+use release_channel::{AppCommitSha, AppVersion, RELEASE_CHANNEL, ReleaseChannel};
 use settings::Settings;
 use smol::stream::StreamExt;
 use std::{
@@ -22,6 +22,109 @@ use url::Url;
 use util::ResultExt;
 
 static PANIC_COUNT: AtomicU32 = AtomicU32::new(0);
+
+fn create_panic_data(
+    thread: &str,
+    payload: String,
+    location_data: Option<LocationData>,
+    backtrace: Vec<String>,
+    app_version: SemanticVersion,
+    app_commit_sha: Option<&AppCommitSha>,
+    system_id: Option<String>,
+    installation_id: Option<String>,
+    session_id: String,
+    is_bug: bool,
+) -> telemetry_events::Panic {
+    telemetry_events::Panic {
+        thread: thread.into(),
+        payload,
+        location_data,
+        app_version: app_version.to_string(),
+        app_commit_sha: app_commit_sha.map(|sha| sha.full()),
+        release_channel: RELEASE_CHANNEL.dev_name().into(),
+        target: env!("TARGET").to_owned().into(),
+        os_name: telemetry::os_name(),
+        os_version: Some(telemetry::os_version()),
+        architecture: env::consts::ARCH.into(),
+        panicked_on: Utc::now().timestamp_millis(),
+        backtrace,
+        system_id,
+        installation_id,
+        session_id,
+        is_bug,
+    }
+}
+
+pub fn init_bug_handler(
+    http_client: Arc<HttpClientWithUrl>,
+    app_version: SemanticVersion,
+    app_commit_sha: Option<AppCommitSha>,
+    system_id: Option<String>,
+    installation_id: Option<String>,
+    session_id: String,
+) {
+    let panic_report_url = format!("{}/api/panic", &http_client.base_url());
+    let Ok(panic_report_url) = panic_report_url.parse::<Url>() else {
+        log::error!("Invalid panic report URL");
+        return;
+    };
+
+    zlog::bug::set_bug_handler(move |message, _module_path, file, line| {
+        let thread = thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+
+        // Get backtrace
+        let main_module_base_address = get_main_module_base_address();
+        let backtrace = Backtrace::new();
+        let symbols = backtrace
+            .frames()
+            .iter()
+            .flat_map(|frame| {
+                let base = frame
+                    .module_base_address()
+                    .unwrap_or(main_module_base_address);
+                frame.symbols().iter().map(move |symbol| {
+                    format!(
+                        "{}+{}",
+                        symbol
+                            .name()
+                            .as_ref()
+                            .map_or("<unknown>".to_owned(), <_>::to_string),
+                        (frame.ip() as isize).saturating_sub(base as isize)
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let panic_data = create_panic_data(
+            thread_name,
+            message.to_string(),
+            Some(LocationData {
+                file: file.into(),
+                line,
+            }),
+            symbols,
+            app_version,
+            app_commit_sha.as_ref(),
+            system_id.clone(),
+            installation_id.clone(),
+            session_id.clone(),
+            true, // is_bug = true
+        );
+
+        if serde_json::to_string(&panic_data).log_err().is_some() {
+            // Send telemetry event asynchronously
+            let http = http_client.clone();
+            let panic_report_url = panic_report_url.clone();
+            smol::spawn(async move {
+                upload_panic(&http, &panic_report_url, panic_data, &mut None)
+                    .await
+                    .log_err();
+            })
+            .detach();
+        }
+    });
+}
 
 pub fn init_panic_hook(
     app_version: SemanticVersion,
@@ -106,26 +209,21 @@ pub fn init_panic_hook(
             symbols.drain(0..=ix);
         }
 
-        let panic_data = telemetry_events::Panic {
-            thread: thread_name.into(),
+        let panic_data = create_panic_data(
+            thread_name,
             payload,
-            location_data: info.location().map(|location| LocationData {
+            info.location().map(|location| LocationData {
                 file: location.file().into(),
                 line: location.line(),
             }),
-            app_version: app_version.to_string(),
-            app_commit_sha: app_commit_sha.as_ref().map(|sha| sha.full()),
-            release_channel: RELEASE_CHANNEL.dev_name().into(),
-            target: env!("TARGET").to_owned().into(),
-            os_name: telemetry::os_name(),
-            os_version: Some(telemetry::os_version()),
-            architecture: env::consts::ARCH.into(),
-            panicked_on: Utc::now().timestamp_millis(),
-            backtrace: symbols,
-            system_id: system_id.clone(),
-            installation_id: installation_id.clone(),
-            session_id: session_id.clone(),
-        };
+            symbols,
+            app_version,
+            app_commit_sha.as_ref(),
+            system_id.clone(),
+            installation_id.clone(),
+            session_id.clone(),
+            false,
+        );
 
         if let Some(panic_data_json) = serde_json::to_string_pretty(&panic_data).log_err() {
             log::error!("{}", panic_data_json);

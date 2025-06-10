@@ -287,6 +287,9 @@ pub struct Panic {
     pub installation_id: Option<String>,
     /// Identifier unique to each Zed session (differs for each time you open Zed)
     pub session_id: String,
+    /// Indicates if this is from a bug! macro rather than a panic
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_bug: bool,
 }
 
 #[derive(Serialize, Deserialize)]
