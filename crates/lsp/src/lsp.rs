@@ -262,6 +262,8 @@ struct AnyNotification {
 #[derive(Debug, Serialize, Deserialize)]
 struct Error {
     message: String,
+    #[serde(default)]
+    data: Option<Value>,
 }
 
 pub trait LspRequestFuture<O>: Future<Output = ConnectionResult<O>> {
@@ -1014,7 +1016,7 @@ impl LanguageServer {
             method,
             Box::new(move |id, params, cx| {
                 if let Some(id) = id {
-                    match serde_json::from_value(params) {
+                    match Params::deserialize(&params) {
                         Ok(params) => {
                             let response = f(params, cx);
                             cx.foreground_executor()
@@ -1032,6 +1034,7 @@ impl LanguageServer {
                                                 id,
                                                 value: LspResult::Error(Some(Error {
                                                     message: error.to_string(),
+                                                    data: None,
                                                 })),
                                             },
                                         };
@@ -1053,6 +1056,7 @@ impl LanguageServer {
                                 result: None,
                                 error: Some(Error {
                                     message: error.to_string(),
+                                    data: None,
                                 }),
                             };
                             if let Some(response) = serde_json::to_string(&response).log_err() {
@@ -1172,7 +1176,16 @@ impl LanguageServer {
                                             Err(error).context("failed to deserialize response")
                                         }
                                     }
-                                    Err(error) => Err(anyhow!("{}", error.message)),
+                                    Err(error) => {
+                                        if let Some(data) = &error.data {
+                                            match serde_json::to_string_pretty(data) {
+                                                Ok(data) => Err(anyhow!("error.data = {data}").context(error.message)),
+                                                Err(_) => Err(anyhow!("{}", error.message)),
+                                            }
+                                        } else {
+                                            Err(anyhow!("{}", error.message))
+                                        }
+                                    }
                                 };
                                 _ = tx.send(response);
                             })
