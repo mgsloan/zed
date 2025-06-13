@@ -740,6 +740,10 @@ pub(super) async fn format_with_prettier(
                 .await
                 .with_context(|| format!("{} failed to format buffer", prettier_description));
 
+            if let Err(err) = &format_result {
+                log::error!("{err}");
+            }
+
             Some(format_result)
         }
         Err(error) => {
