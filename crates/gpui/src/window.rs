@@ -4,13 +4,13 @@ use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Context,
     Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener, DispatchNodeId,
-    DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext,
-    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers,
-    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
-    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
-    PlatformWindow, Point, PolychromeSprite, PromptButton, PromptLevel, Quad, Render,
-    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
+    DispatchTree, DisplayId, Edges, Effect, ElementIdNode, Entity, EntityId, EventEmitter,
+    FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
+    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
+    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
+    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, PromptButton, PromptLevel, Quad,
+    Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS, ScaledPixels, Scene, Shadow, SharedString, Size,
     StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine, Task, TextStyle,
     TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle, WindowAppearance,
@@ -602,7 +602,7 @@ pub(crate) struct DeferredDraw {
     current_view: EntityId,
     priority: usize,
     parent_node: DispatchNodeId,
-    element_id_stack: SmallVec<[ElementId; 32]>,
+    global_element_id: Option<GlobalElementId>,
     text_style_stack: Vec<TextStyleRefinement>,
     element: Option<AnyElement>,
     absolute_offset: Point<Pixels>,
@@ -627,7 +627,7 @@ pub(crate) struct Frame {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(feature = "inspector", debug_assertions))]
-    pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
+    pub(crate) next_inspector_instance_ids: FxHashMap<crate::InspectorElementPath, usize>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
 }
@@ -775,7 +775,7 @@ pub struct Window {
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
-    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
+    pub(crate) global_element_id: Option<GlobalElementId>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -1080,7 +1080,7 @@ impl Window {
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
-            element_id_stack: SmallVec::default(),
+            global_element_id: None,
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
@@ -1654,20 +1654,6 @@ impl Window {
         self.rem_size = rem_size.into();
     }
 
-    /// Acquire a globally unique identifier for the given ElementId.
-    /// Only valid for the duration of the provided closure.
-    pub fn with_global_id<R>(
-        &mut self,
-        element_id: ElementId,
-        f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
-    ) -> R {
-        self.element_id_stack.push(element_id);
-        let global_id = GlobalElementId(self.element_id_stack.clone());
-        let result = f(&global_id, self);
-        self.element_id_stack.pop();
-        result
-    }
-
     /// Executes the provided function with the specified rem size.
     ///
     /// This method must only be called as part of element drawing.
@@ -1984,13 +1970,13 @@ impl Window {
     }
 
     fn prepaint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
-        assert_eq!(self.element_id_stack.len(), 0);
+        assert!(self.global_element_id.is_none());
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
-            self.element_id_stack
-                .clone_from(&deferred_draw.element_id_stack);
+            self.global_element_id
+                .clone_from(&deferred_draw.global_element_id);
             self.text_style_stack
                 .clone_from(&deferred_draw.text_style_stack);
             self.next_frame
@@ -2016,18 +2002,18 @@ impl Window {
             "cannot call defer_draw during deferred drawing"
         );
         self.next_frame.deferred_draws = deferred_draws;
-        self.element_id_stack.clear();
+        self.global_element_id = None;
         self.text_style_stack.clear();
     }
 
     fn paint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
-        assert_eq!(self.element_id_stack.len(), 0);
+        assert!(self.global_element_id.is_none());
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
             let mut deferred_draw = &mut deferred_draws[*deferred_draw_ix];
-            self.element_id_stack
-                .clone_from(&deferred_draw.element_id_stack);
+            self.global_element_id
+                .clone_from(&deferred_draw.global_element_id);
             self.next_frame
                 .dispatch_tree
                 .set_active_node(deferred_draw.parent_node);
@@ -2044,7 +2030,7 @@ impl Window {
             deferred_draw.paint_range = paint_start..paint_end;
         }
         self.next_frame.deferred_draws = deferred_draws;
-        self.element_id_stack.clear();
+        self.global_element_id = None;
     }
 
     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
@@ -2074,7 +2060,7 @@ impl Window {
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
-                .map(|(id, type_id)| (GlobalElementId(id.0.clone()), *type_id)),
+                .cloned(),
         );
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
@@ -2096,7 +2082,7 @@ impl Window {
                 .map(|deferred_draw| DeferredDraw {
                     current_view: deferred_draw.current_view,
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
-                    element_id_stack: deferred_draw.element_id_stack.clone(),
+                    global_element_id: deferred_draw.global_element_id.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
                     priority: deferred_draw.priority,
                     element: None,
@@ -2141,7 +2127,7 @@ impl Window {
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
-                .map(|(id, type_id)| (GlobalElementId(id.0.clone()), *type_id)),
+                .cloned(),
         );
 
         self.text_system
@@ -2389,10 +2375,64 @@ impl Window {
         element_id: impl Into<ElementId>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.element_id_stack.push(element_id.into());
-        let result = f(self);
-        self.element_id_stack.pop();
+        self.with_global_id(element_id.into(), |_, window| f(window))
+    }
+
+    /// Acquire a globally unique identifier for the given ElementId.
+    pub fn with_global_id<R>(
+        &mut self,
+        element_id: ElementId,
+        f: impl FnOnce(GlobalElementId, &mut Self) -> R,
+    ) -> R {
+        let new_id = GlobalElementId(Rc::new(ElementIdNode::new(
+            self.global_element_id.clone(),
+            element_id,
+        )));
+        let original_id = self.global_element_id.replace(new_id.clone());
+        let result = f(new_id, self);
+        self.global_element_id = original_id;
         result
+    }
+
+    /// Sets the current `GlobalElementId` to the provided ID. It is an error to use this when the
+    /// parent of the new ID does not match the current ID.
+    pub(crate) fn with_existing_global_id<R>(
+        &mut self,
+        new_id: GlobalElementId,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        debug_assert_eq!(self.global_element_id, new_id.0.parent);
+        let original_id = self.global_element_id.replace(new_id);
+        let result = f(self);
+        self.global_element_id = original_id;
+        result
+    }
+
+    /// Optionally acquire a globally unique identifier for the given ElementId.
+    pub(crate) fn with_optional_global_id<R>(
+        &mut self,
+        element_id: Option<ElementId>,
+        f: impl FnOnce(Option<GlobalElementId>, &mut Self) -> R,
+    ) -> R {
+        if let Some(element_id) = element_id {
+            self.with_global_id(element_id, |global_id, window| f(Some(global_id), window))
+        } else {
+            f(None, self)
+        }
+    }
+
+    /// Optionally sets the current `GlobalElementId` to the provided ID. It is an error to use this
+    /// when the parent of the new ID does not match the current ID.
+    pub(crate) fn with_optional_existing_global_id<R>(
+        &mut self,
+        new_id: Option<GlobalElementId>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if let Some(new_id) = new_id {
+            self.with_existing_global_id(new_id, f)
+        } else {
+            f(self)
+        }
     }
 
     /// Updates or initializes state for an element with the given id that lives across multiple
@@ -2409,10 +2449,8 @@ impl Window {
     {
         self.invalidator.debug_assert_paint_or_prepaint();
 
-        let key = (GlobalElementId(global_id.0.clone()), TypeId::of::<S>());
-        self.next_frame
-            .accessed_element_states
-            .push((GlobalElementId(key.0.clone()), TypeId::of::<S>()));
+        let key = (global_id.clone(), TypeId::of::<S>());
+        self.next_frame.accessed_element_states.push(key.clone());
 
         if let Some(any) = self
             .next_frame
@@ -2525,7 +2563,7 @@ impl Window {
         self.next_frame.deferred_draws.push(DeferredDraw {
             current_view: self.current_view(),
             parent_node,
-            element_id_stack: self.element_id_stack.clone(),
+            global_element_id: self.global_element_id.clone(),
             text_style_stack: self.text_style_stack.clone(),
             priority,
             element: Some(element),
@@ -4168,7 +4206,6 @@ impl Window {
         path: crate::InspectorElementPath,
     ) -> crate::InspectorElementId {
         self.invalidator.debug_assert_paint_or_prepaint();
-        let path = Rc::new(path);
         let next_instance_id = self
             .next_frame
             .next_inspector_instance_ids

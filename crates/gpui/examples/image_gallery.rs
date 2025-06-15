@@ -147,7 +147,7 @@ impl ImageCacheProvider for SimpleLruCacheProvider {
         window
             .with_global_id(self.id.clone(), |global_id, window| {
                 window.with_element_state::<Entity<SimpleLruCache>, _>(
-                    global_id,
+                    &global_id,
                     |lru_cache, _window| {
                         let mut lru_cache = lru_cache.unwrap_or_else(|| {
                             cx.new(|cx| SimpleLruCache::new(self.max_items, cx))
