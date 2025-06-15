@@ -1095,32 +1095,37 @@ impl LocalLspStore {
         root
     }
 
+    fn language_servers_for_buffer<'a>(
+        &'a self,
+        buffer: &'a Buffer,
+        cx: &'a mut App,
+    ) -> impl Iterator<Item = (&'a Arc<CachedLspAdapter>, &'a Arc<LanguageServer>)> {
+        if let Some((file, language)) = File::from_dyn(buffer.file()).zip(buffer.language()) {
+            itertools::Either::Left(self.language_servers_for_file(file, language, cx))
+        } else {
+            itertools::Either::Right(iter::empty())
+        }
+    }
+
     fn language_server_ids_for_buffer(
         &self,
         buffer: &Buffer,
         cx: &mut App,
     ) -> Vec<LanguageServerId> {
         if let Some((file, language)) = File::from_dyn(buffer.file()).zip(buffer.language()) {
-            let worktree_id = file.worktree_id(cx);
-
-            let path: Arc<Path> = file
-                .path()
-                .parent()
-                .map(Arc::from)
-                .unwrap_or_else(|| file.path().clone());
-            let worktree_path = ProjectPath { worktree_id, path };
-            self.language_server_ids_for_project_path(worktree_path, language, cx)
+            self.language_server_ids_for_file(file, language, cx)
         } else {
             Vec::new()
         }
     }
 
-    fn language_servers_for_buffer<'a>(
+    fn language_servers_for_file<'a>(
         &'a self,
-        buffer: &'a Buffer,
+        file: &'a File,
+        language: &'a Arc<Language>,
         cx: &'a mut App,
     ) -> impl Iterator<Item = (&'a Arc<CachedLspAdapter>, &'a Arc<LanguageServer>)> {
-        self.language_server_ids_for_buffer(buffer, cx)
+        self.language_server_ids_for_file(file, language, cx)
             .into_iter()
             .filter_map(|server_id| match self.language_servers.get(&server_id)? {
                 LanguageServerState::Running {
@@ -1128,6 +1133,23 @@ impl LocalLspStore {
                 } => Some((adapter, server)),
                 _ => None,
             })
+    }
+
+    fn language_server_ids_for_file<'a>(
+        &self,
+        file: &'a File,
+        language: &'a Arc<Language>,
+        cx: &mut App,
+    ) -> Vec<LanguageServerId> {
+        let worktree_id = file.worktree_id(cx);
+
+        let path: Arc<Path> = file
+            .path()
+            .parent()
+            .map(Arc::from)
+            .unwrap_or_else(|| file.path().clone());
+        let worktree_path = ProjectPath { worktree_id, path };
+        self.language_server_ids_for_project_path(worktree_path, language, cx)
     }
 
     async fn execute_code_action_kind_locally(
@@ -3780,6 +3802,38 @@ impl LspStore {
         match event {
             BufferStoreEvent::BufferAdded(buffer) => {
                 self.on_buffer_added(buffer, cx).log_err();
+            }
+            BufferStoreEvent::BufferDropped {
+                buffer_id,
+                file,
+                language,
+            } => {
+                // todo! handle remote?
+                //
+                // todo! squash nesting
+                if let Some(local) = self.as_local_mut() {
+                    if let Some((file, language)) =
+                        File::from_dyn(file.as_ref()).zip(language.as_ref())
+                    {
+                        if let Some(path) = file.as_local().map(|local| local.abs_path(cx)) {
+                            if let Ok(file_url) = lsp::Url::from_file_path(path.as_path()) {
+                                if local.registered_buffers.contains_key(&buffer_id) {
+                                    for (_, language_server) in
+                                        local.language_servers_for_file(file, language, cx)
+                                    {
+                                        language_server.unregister_buffer(file_url.clone());
+                                    }
+                                }
+                            } else {
+                                debug_panic!(
+                                    "`{}` is not parseable as an URI",
+                                    old_path.to_string_lossy()
+                                );
+                                return;
+                            };
+                        }
+                    }
+                }
             }
             BufferStoreEvent::BufferChangedFilePath { buffer, old_file } => {
                 let buffer_id = buffer.read(cx).remote_id();

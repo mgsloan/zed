@@ -80,7 +80,11 @@ pub enum BufferStoreEvent {
         project_path: ProjectPath,
     },
     SharedBufferClosed(proto::PeerId, BufferId),
-    BufferDropped(BufferId),
+    BufferDropped {
+        buffer_id: BufferId,
+        file: Option<Arc<dyn language::File>>,
+        language: Option<Arc<Language>>,
+    },
     BufferChangedFilePath {
         buffer: Entity<Buffer>,
         old_file: Option<Arc<dyn language::File>>,
