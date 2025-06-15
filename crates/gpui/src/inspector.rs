@@ -3,7 +3,7 @@
 pub struct InspectorElementId {
     /// Stable part of the ID.
     #[cfg(any(feature = "inspector", debug_assertions))]
-    pub path: std::rc::Rc<InspectorElementPath>,
+    pub path: InspectorElementPath,
     /// Disambiguates elements that have the same path.
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub instance_id: usize,
@@ -26,23 +26,12 @@ mod conditional {
     use std::any::{Any, TypeId};
 
     /// `GlobalElementId` qualified by source location of element construction.
-    #[derive(Debug, Eq, PartialEq, Hash)]
+    #[derive(Debug, Eq, PartialEq, Hash, Clone)]
     pub struct InspectorElementPath {
         /// The path to the nearest ancestor element that has an `ElementId`.
-        #[cfg(any(feature = "inspector", debug_assertions))]
-        pub global_id: crate::GlobalElementId,
+        pub global_id: Option<crate::GlobalElementId>,
         /// Source location where this element was constructed.
-        #[cfg(any(feature = "inspector", debug_assertions))]
         pub source_location: &'static std::panic::Location<'static>,
-    }
-
-    impl Clone for InspectorElementPath {
-        fn clone(&self) -> Self {
-            Self {
-                global_id: crate::GlobalElementId(self.global_id.0.clone()),
-                source_location: self.source_location,
-            }
-        }
     }
 
     impl Into<InspectorElementPath> for &InspectorElementPath {

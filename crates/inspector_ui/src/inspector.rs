@@ -141,7 +141,10 @@ fn render_inspector_id(inspector_id: &InspectorElementId, cx: &App) -> Div {
                 .tooltip(Tooltip::text(
                     "GlobalElementId of the nearest ancestor with an ID",
                 ))
-                .child(inspector_id.path.global_id.to_string()),
+                .child(match &inspector_id.path.global_id {
+                    Some(global_id) => global_id.to_string().into(),
+                    None => SharedString::new_static("<root-element>"),
+                }),
         )
 }
 
