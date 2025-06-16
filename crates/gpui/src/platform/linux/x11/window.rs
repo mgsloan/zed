@@ -1,4 +1,6 @@
 use anyhow::{Context as _, anyhow};
+use calloop::RegistrationToken;
+use x11rb::protocol::xproto::Visibility;
 
 use crate::platform::blade::{BladeContext, BladeRenderer, BladeSurfaceConfig};
 use crate::{
@@ -26,6 +28,7 @@ use x11rb::{
     xcb_ffi::XCBConnection,
 };
 
+use std::time::Duration;
 use std::{
     cell::RefCell, ffi::c_void, fmt::Display, num::NonZeroU32, ops::Div, ptr::NonNull, rc::Rc,
     sync::Arc,
@@ -256,6 +259,10 @@ pub struct X11WindowState {
     renderer: BladeRenderer,
     display: Rc<dyn PlatformDisplay>,
     input_handler: Option<PlatformInputHandler>,
+    pub(crate) refresh_state: Option<RefreshState>,
+    pub(crate) expose_event_received: bool,
+    pub(crate) last_visibility: Visibility,
+    pub(crate) mapped: bool,
     appearance: WindowAppearance,
     background_appearance: WindowBackgroundAppearance,
     maximized_vertical: bool,
@@ -269,6 +276,16 @@ pub struct X11WindowState {
     edge_constraints: Option<EdgeConstraints>,
     pub handle: AnyWindowHandle,
     last_insets: [u32; 4],
+}
+
+pub enum RefreshState {
+    Hidden {
+        refresh_rate: Duration,
+    },
+    PeriodicRefresh {
+        refresh_rate: Duration,
+        event_loop_token: RegistrationToken,
+    },
 }
 
 impl X11WindowState {
@@ -617,6 +634,10 @@ impl X11WindowState {
                 renderer,
                 atoms: *atoms,
                 input_handler: None,
+                refresh_state: None,
+                expose_event_received: false,
+                last_visibility: Visibility::UNOBSCURED,
+                mapped: false,
                 active: false,
                 hovered: false,
                 fullscreen: false,
@@ -901,6 +922,7 @@ impl X11WindowStatePtr {
         &self,
         mut state: std::cell::RefMut<X11WindowState>,
     ) -> anyhow::Result<()> {
+        dbg!("set_wm_properties");
         let reply = get_reply(
             || "X11 GetProperty for _NET_WM_STATE failed.",
             self.xcb.get_property(
@@ -912,6 +934,7 @@ impl X11WindowStatePtr {
                 u32::MAX,
             ),
         )?;
+        dbg!("got property");
 
         let atoms = reply
             .value
@@ -922,7 +945,7 @@ impl X11WindowStatePtr {
         state.fullscreen = false;
         state.maximized_vertical = false;
         state.maximized_horizontal = false;
-        state.hidden = true;
+        state.hidden = false;
 
         for atom in atoms {
             if atom == state.atoms._NET_WM_STATE_FOCUSED {
