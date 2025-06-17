@@ -465,7 +465,7 @@ impl X11Client {
                         }
                     }
                     XDPEvent::CursorTheme(_) | XDPEvent::CursorSize(_) => {
-                        // noop, X11 manages this for us.
+                        // todo! it does not.
                     }
                 }
             })
