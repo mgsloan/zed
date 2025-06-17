@@ -58,13 +58,28 @@ use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
+    marker::PhantomData,
     mem,
     ops::Range,
     rc::Rc,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct DispatchNodeId(usize);
+// Do *not* derive Copy on this as it allows it to be copied to other threads.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct DispatchNodeId {
+    index: usize,
+    /// Not `Send` because these are not stable between frames and so should not be used async.
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl DispatchNodeId {
+    pub(crate) fn new(index: usize) -> Self {
+        Self {
+            index,
+            _not_send: PhantomData,
+        }
+    }
+}
 
 pub(crate) struct DispatchTree {
     node_stack: Vec<DispatchNodeId>,
@@ -97,12 +112,12 @@ pub(crate) struct ReusedSubtree {
 impl ReusedSubtree {
     pub fn refresh_node_id(&self, node_id: DispatchNodeId) -> DispatchNodeId {
         debug_assert!(
-            self.old_range.contains(&node_id.0),
+            self.old_range.contains(&node_id.index),
             "node {} was not part of the reused subtree {:?}",
-            node_id.0,
+            node_id.index,
             self.old_range
         );
-        DispatchNodeId((node_id.0 - self.old_range.start) + self.new_range.start)
+        DispatchNodeId::new((node_id.index - self.old_range.start) + self.new_range.start)
     }
 
     pub fn contains_focus(&self) -> bool {
@@ -161,26 +176,26 @@ impl DispatchTree {
     }
 
     pub fn push_node(&mut self) -> DispatchNodeId {
-        let parent = self.node_stack.last().copied();
-        let node_id = DispatchNodeId(self.nodes.len());
+        let parent = self.node_stack.last().cloned();
+        let node_id = DispatchNodeId::new(self.nodes.len());
 
         self.nodes.push(DispatchNode {
             parent,
             ..Default::default()
         });
-        self.node_stack.push(node_id);
+        self.node_stack.push(node_id.clone());
         node_id
     }
 
     pub fn set_active_node(&mut self, node_id: DispatchNodeId) {
-        let next_node_parent = self.nodes[node_id.0].parent;
-        while self.node_stack.last().copied() != next_node_parent && !self.node_stack.is_empty() {
+        let next_node_parent = self.nodes[node_id.index].parent.clone();
+        while self.node_stack.last().cloned() != next_node_parent && !self.node_stack.is_empty() {
             self.pop_node();
         }
 
-        if self.node_stack.last().copied() == next_node_parent {
-            self.node_stack.push(node_id);
-            let active_node = &self.nodes[node_id.0];
+        if self.node_stack.last().cloned() == next_node_parent {
+            self.node_stack.push(node_id.clone());
+            let active_node = &self.nodes[node_id.index];
             if let Some(view_id) = active_node.view_id {
                 self.view_stack.push(view_id)
             }
@@ -192,7 +207,7 @@ impl DispatchTree {
 
             let mut current_node_id = Some(node_id);
             while let Some(node_id) = current_node_id {
-                let node = &self.nodes[node_id.0];
+                let node = &self.nodes[node_id.index];
                 if let Some(context) = node.context.clone() {
                     self.context_stack.push(context);
                 }
@@ -200,7 +215,7 @@ impl DispatchTree {
                     self.view_stack.push(node.view_id.unwrap());
                 }
                 self.node_stack.push(node_id);
-                current_node_id = node.parent;
+                current_node_id = node.parent.clone();
             }
 
             self.context_stack.reverse();
@@ -215,22 +230,22 @@ impl DispatchTree {
     }
 
     pub fn set_focus_id(&mut self, focus_id: FocusId) {
-        let node_id = *self.node_stack.last().unwrap();
-        self.nodes[node_id.0].focus_id = Some(focus_id);
+        let node_id = self.node_stack.last().unwrap().clone();
+        self.nodes[node_id.index].focus_id = Some(focus_id);
         self.focusable_node_ids.insert(focus_id, node_id);
     }
 
     pub fn set_view_id(&mut self, view_id: EntityId) {
-        if self.view_stack.last().copied() != Some(view_id) {
-            let node_id = *self.node_stack.last().unwrap();
-            self.nodes[node_id.0].view_id = Some(view_id);
+        if self.view_stack.last().cloned() != Some(view_id) {
+            let node_id = self.node_stack.last().unwrap().clone();
+            self.nodes[node_id.index].view_id = Some(view_id);
             self.view_node_ids.insert(view_id, node_id);
             self.view_stack.push(view_id);
         }
     }
 
     pub fn pop_node(&mut self) {
-        let node = &self.nodes[self.active_node_id().unwrap().0];
+        let node = &self.nodes[self.active_node_id().unwrap().index];
         if node.context.is_some() {
             self.context_stack.pop();
         }
@@ -275,7 +290,7 @@ impl DispatchTree {
             .skip(old_range.start)
             .take(old_range.len())
         {
-            let source_node_id = DispatchNodeId(source_node_id);
+            let source_node_id = DispatchNodeId::new(source_node_id);
             while let Some(source_ancestor) = source_stack.last() {
                 if source_node.parent == Some(*source_ancestor) {
                     break;
@@ -346,12 +361,12 @@ impl DispatchTree {
         }
 
         if let Some(parent_node_id) = self.focusable_node_ids.get(&parent) {
-            let mut current_node_id = self.focusable_node_ids.get(&child).copied();
+            let mut current_node_id = self.focusable_node_ids.get(&child).cloned();
             while let Some(node_id) = current_node_id {
                 if node_id == *parent_node_id {
                     return true;
                 }
-                current_node_id = self.nodes[node_id.0].parent;
+                current_node_id = self.nodes[node_id.index].parent;
             }
         }
         false
@@ -360,7 +375,7 @@ impl DispatchTree {
     pub fn available_actions(&self, target: DispatchNodeId) -> Vec<Box<dyn Action>> {
         let mut actions = Vec::<Box<dyn Action>>::new();
         for node_id in self.dispatch_path(target) {
-            let node = &self.nodes[node_id.0];
+            let node = &self.nodes[node_id.index];
             for DispatchActionListener { action_type, .. } in &node.action_listeners {
                 if let Err(ix) = actions.binary_search_by_key(action_type, |a| a.as_any().type_id())
                 {
@@ -378,7 +393,7 @@ impl DispatchTree {
 
     pub fn is_action_available(&self, action: &dyn Action, target: DispatchNodeId) -> bool {
         for node_id in self.dispatch_path(target) {
-            let node = &self.nodes[node_id.0];
+            let node = &self.nodes[node_id.index];
             if node
                 .action_listeners
                 .iter()
@@ -561,7 +576,7 @@ impl DispatchTree {
         let mut current_node_id = Some(target);
         while let Some(node_id) = current_node_id {
             dispatch_path.push(node_id);
-            current_node_id = self.nodes[node_id.0].parent;
+            current_node_id = self.nodes[node_id.index].parent;
         }
         dispatch_path.reverse(); // Reverse the path so it goes from the root to the focused node.
         dispatch_path
@@ -569,7 +584,7 @@ impl DispatchTree {
 
     pub fn focus_path(&self, focus_id: FocusId) -> SmallVec<[FocusId; 8]> {
         let mut focus_path: SmallVec<[FocusId; 8]> = SmallVec::new();
-        let mut current_node_id = self.focusable_node_ids.get(&focus_id).copied();
+        let mut current_node_id = self.focusable_node_ids.get(&focus_id).cloned();
         while let Some(node_id) = current_node_id {
             let node = self.node(node_id);
             if let Some(focus_id) = node.focus_id {
@@ -583,7 +598,7 @@ impl DispatchTree {
 
     pub fn view_path(&self, view_id: EntityId) -> SmallVec<[EntityId; 8]> {
         let mut view_path: SmallVec<[EntityId; 8]> = SmallVec::new();
-        let mut current_node_id = self.view_node_ids.get(&view_id).copied();
+        let mut current_node_id = self.view_node_ids.get(&view_id).cloned();
         while let Some(node_id) = current_node_id {
             let node = self.node(node_id);
             if let Some(view_id) = node.view_id {
@@ -596,25 +611,25 @@ impl DispatchTree {
     }
 
     pub fn node(&self, node_id: DispatchNodeId) -> &DispatchNode {
-        &self.nodes[node_id.0]
+        &self.nodes[node_id.index]
     }
 
     fn active_node(&mut self) -> &mut DispatchNode {
         let active_node_id = self.active_node_id().unwrap();
-        &mut self.nodes[active_node_id.0]
+        &mut self.nodes[active_node_id.index]
     }
 
     pub fn focusable_node_id(&self, target: FocusId) -> Option<DispatchNodeId> {
-        self.focusable_node_ids.get(&target).copied()
+        self.focusable_node_ids.get(&target).cloned()
     }
 
     pub fn root_node_id(&self) -> DispatchNodeId {
         debug_assert!(!self.nodes.is_empty());
-        DispatchNodeId(0)
+        DispatchNodeId::new(0)
     }
 
     pub fn active_node_id(&self) -> Option<DispatchNodeId> {
-        self.node_stack.last().copied()
+        self.node_stack.last().cloned()
     }
 }
 
