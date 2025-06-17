@@ -1615,23 +1615,27 @@ impl ProjectSearchBar {
     }
 
     fn cycle_field(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        let active_project_search = match &self.active_project_search {
-            Some(active_project_search) => active_project_search,
+        let Some(search_view) = &self.active_project_search else {
+            return;
+        };
+        let search_view_ref = search_view.read(cx);
+        if !search_view_ref.filters_enabled && !search_view_ref.replace_enabled {
+            self.toggle_filters(window, cx);
+        }
 
-            None => {
-                return;
-            }
+        let Some(search_view) = &self.active_project_search else {
+            return;
         };
 
-        active_project_search.update(cx, |project_view, cx| {
-            let mut views = vec![&project_view.query_editor];
-            if project_view.replace_enabled {
-                views.push(&project_view.replacement_editor);
+        search_view.update(cx, |search_view, cx| {
+            let mut views = vec![&search_view.query_editor];
+            if search_view.replace_enabled {
+                views.push(&search_view.replacement_editor);
             }
-            if project_view.filters_enabled {
+            if search_view.filters_enabled {
                 views.extend([
-                    &project_view.included_files_editor,
-                    &project_view.excluded_files_editor,
+                    &search_view.included_files_editor,
+                    &search_view.excluded_files_editor,
                 ]);
             }
             let current_index = match views
