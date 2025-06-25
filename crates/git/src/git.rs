@@ -57,6 +57,7 @@ actions!(
         Amend,
         Cancel,
         ExpandCommitEditor,
+        #[action(deprecated_aliases = ["git_panel::GenerateCommitMessage"])]
         GenerateCommitMessage,
         Init,
         OpenModifiedFiles,
