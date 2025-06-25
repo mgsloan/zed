@@ -1757,6 +1757,7 @@ impl GitPanel {
 
     /// Generates a commit message using an LLM.
     pub fn generate_commit_message(&mut self, cx: &mut Context<Self>) {
+        dbg!("generate_commit_message");
         if !self.can_commit() {
             return;
         }

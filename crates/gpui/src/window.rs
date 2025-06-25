@@ -3576,6 +3576,14 @@ impl Window {
         }
 
         cx.propagate_event = true;
+        dbg!(match_result.bindings.len());
+        dbg!(
+            match_result
+                .bindings
+                .iter()
+                .map(|binding| binding.action.name())
+                .collect::<Vec<_>>()
+        );
         for binding in match_result.bindings {
             self.dispatch_action_on_node(node_id, binding.action.as_ref(), cx);
             if !cx.propagate_event {
