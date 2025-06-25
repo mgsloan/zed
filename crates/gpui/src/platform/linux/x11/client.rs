@@ -536,6 +536,8 @@ impl X11Client {
         &self,
         xcb_connection: &XCBConnection,
     ) -> Result<(), EventHandlerError> {
+        let mut processed_count = 0;
+        let start_time = Instant::now();
         loop {
             let mut events = Vec::new();
             let mut windows_to_refresh = HashSet::new();
@@ -550,6 +552,7 @@ impl X11Client {
             loop {
                 match xcb_connection.poll_for_event() {
                     Ok(Some(event)) => {
+                        processed_count += 1;
                         match event {
                             Event::Expose(expose_event) => {
                                 windows_to_refresh.insert(expose_event.window);
@@ -683,6 +686,11 @@ impl X11Client {
                 }
             }
         }
+        log::info!(
+            "Processed {} events in {} micros",
+            processed_count,
+            Instant::now().duration_since(start_time).as_micros()
+        );
         Ok(())
     }
 
@@ -1815,21 +1823,19 @@ impl X11ClientState {
         self.loop_handle
             .insert_source(calloop::timer::Timer::immediate(), {
                 move |mut instant, (), client| {
-                    let xcb_connection = {
-                        let mut state = client.0.borrow_mut();
-                        let xcb_connection = state.xcb_connection.clone();
-                        if let Some(window) = state.windows.get_mut(&x_window) {
-                            let expose_event_received = window.expose_event_received;
-                            window.expose_event_received = false;
-                            let window = window.window.clone();
-                            drop(state);
-                            window.refresh(RequestFrameOptions {
-                                require_presentation: expose_event_received,
-                            });
-                        }
-                        xcb_connection
-                    };
+                    let xcb_connection = client.0.borrow().xcb_connection.clone();
                     client.process_x11_events(&xcb_connection).log_err();
+
+                    let mut state = client.0.borrow_mut();
+                    if let Some(window) = state.windows.get_mut(&x_window) {
+                        let expose_event_received = window.expose_event_received;
+                        window.expose_event_received = false;
+                        let window = window.window.clone();
+                        drop(state);
+                        window.refresh(RequestFrameOptions {
+                            require_presentation: expose_event_received,
+                        });
+                    }
 
                     // Take into account that some frames have been skipped
                     let now = Instant::now();
