@@ -35,15 +35,16 @@ struct KeyContextView {
     last_keystrokes: Option<SharedString>,
     last_possibilities: Vec<(SharedString, SharedString, Option<bool>)>,
     context_stack: Vec<KeyContext>,
+    last_action_name: Option<&'static str>,
     focus_handle: FocusHandle,
     _subscriptions: [Subscription; 2],
 }
 
 impl KeyContextView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let sub1 = cx.observe_keystrokes(|this, e, _, cx| {
+        let sub1 = cx.observe_keystrokes(|this, event, _, cx| {
             let mut pending = this.pending_keystrokes.take().unwrap_or_default();
-            pending.push(e.keystroke.clone());
+            pending.push(event.keystroke.clone());
             let mut possibilities = cx.all_bindings_for_input(&pending);
             possibilities.reverse();
             this.last_keystrokes = Some(
@@ -51,13 +52,14 @@ impl KeyContextView {
                     .to_string()
                     .into(),
             );
-            this.context_stack = e.context_stack.clone();
+            this.context_stack = event.context_stack.clone();
+            this.last_action_name = event.action.as_ref().map(|action| action.name());
             this.last_possibilities = possibilities
                 .into_iter()
                 .map(|binding| {
                     let match_state = if let Some(predicate) = binding.predicate() {
                         if this.matches(&predicate) {
-                            if this.action_matches(&e.action, binding.action()) {
+                            if this.action_matches(&event.action, binding.action()) {
                                 Some(true)
                             } else {
                                 Some(false)
@@ -66,7 +68,7 @@ impl KeyContextView {
                             None
                         }
                     } else {
-                        if this.action_matches(&e.action, binding.action()) {
+                        if this.action_matches(&event.action, binding.action()) {
                             Some(true)
                         } else {
                             Some(false)
@@ -97,6 +99,7 @@ impl KeyContextView {
                 .map(|k| k.iter().cloned().collect());
             if this.pending_keystrokes.is_some() {
                 this.last_keystrokes.take();
+                this.last_action_name.take();
             }
             cx.notify();
         });
@@ -106,6 +109,7 @@ impl KeyContextView {
             pending_keystrokes: None,
             last_keystrokes: None,
             last_possibilities: Vec::new(),
+            last_action_name: None,
             focus_handle: cx.focus_handle(),
             _subscriptions: [sub1, sub2],
         }
@@ -294,6 +298,10 @@ impl Render for KeyContextView {
                                 Label::new(format!("cmd-{} => cmd-{}", key, equivalent)).ml_8()
                             }),
                     )
+            })
+            .when_some(self.last_action_name, |el, action_name| {
+                el.child(Label::new("Action").mt_4().size(LabelSize::Large))
+                  .child(Label::new(action_name).ml(px(12.)))
             })
     }
 }

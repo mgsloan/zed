@@ -88,6 +88,17 @@ impl DispatchPhase {
     }
 }
 
+/// todo!
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DispatchTodo {
+    /// todo!
+    NoHandler,
+    /// todo!
+    Handled,
+    /// todo!
+    HandledAndPropagated,
+}
+
 struct WindowInvalidatorInner {
     pub dirty: bool,
     pub draw_phase: DrawPhase,
@@ -329,7 +340,7 @@ impl FocusHandle {
             .dispatch_tree
             .focusable_node_id(self.id)
         {
-            window.dispatch_action_on_node(node_id, action, cx)
+            window.dispatch_action_on_node(node_id, action, cx);
         }
     }
 }
@@ -3571,8 +3582,17 @@ impl Window {
         }
 
         cx.propagate_event = true;
+        dbg!(match_result.bindings.len());
+        dbg!(
+            match_result
+                .bindings
+                .iter()
+                .map(|binding| binding.action.name())
+                .collect::<Vec<_>>()
+        );
         for binding in match_result.bindings {
-            self.dispatch_action_on_node(node_id, binding.action.as_ref(), cx);
+            let dispatch_todo =
+                dbg!(self.dispatch_action_on_node(node_id, binding.action.as_ref(), cx));
             if !cx.propagate_event {
                 self.dispatch_keystroke_observers(
                     event,
@@ -3734,8 +3754,9 @@ impl Window {
         node_id: DispatchNodeId,
         action: &dyn Action,
         cx: &mut App,
-    ) {
+    ) -> DispatchTodo {
         let dispatch_path = self.rendered_frame.dispatch_tree.dispatch_path(node_id);
+        let mut listener_count: usize = 0;
 
         // Capture phase for global actions.
         cx.propagate_event = true;
@@ -3743,6 +3764,7 @@ impl Window {
             .global_action_listeners
             .remove(&action.as_any().type_id())
         {
+            listener_count += global_listeners.len();
             for listener in &global_listeners {
                 listener(action.as_any(), DispatchPhase::Capture, cx);
                 if !cx.propagate_event {
@@ -3761,7 +3783,7 @@ impl Window {
         }
 
         if !cx.propagate_event {
-            return;
+            return DispatchTodo::Handled;
         }
 
         // Capture phase for window actions.
@@ -3774,10 +3796,11 @@ impl Window {
             {
                 let any_action = action.as_any();
                 if action_type == any_action.type_id() {
+                    listener_count += 1;
                     listener(any_action, DispatchPhase::Capture, self, cx);
 
                     if !cx.propagate_event {
-                        return;
+                        return DispatchTodo::Handled;
                     }
                 }
             }
@@ -3786,6 +3809,7 @@ impl Window {
         // Bubble phase for window actions.
         for node_id in dispatch_path.iter().rev() {
             let node = self.rendered_frame.dispatch_tree.node(*node_id);
+            dbg!(&node.context);
             for DispatchActionListener {
                 action_type,
                 listener,
@@ -3793,11 +3817,12 @@ impl Window {
             {
                 let any_action = action.as_any();
                 if action_type == any_action.type_id() {
+                    listener_count += 1;
                     cx.propagate_event = false; // Actions stop propagation by default during the bubble phase
                     listener(any_action, DispatchPhase::Bubble, self, cx);
 
                     if !cx.propagate_event {
-                        return;
+                        return DispatchTodo::Handled;
                     }
                 }
             }
@@ -3809,11 +3834,12 @@ impl Window {
             .remove(&action.as_any().type_id())
         {
             for listener in global_listeners.iter().rev() {
+                listener_count += 1;
                 cx.propagate_event = false; // Actions stop propagation by default during the bubble phase
 
                 listener(action.as_any(), DispatchPhase::Bubble, cx);
                 if !cx.propagate_event {
-                    break;
+                    return DispatchTodo::Handled;
                 }
             }
 
@@ -3825,6 +3851,12 @@ impl Window {
 
             cx.global_action_listeners
                 .insert(action.as_any().type_id(), global_listeners);
+        }
+
+        if listener_count > 0 {
+            return DispatchTodo::HandledAndPropagated;
+        } else {
+            return DispatchTodo::NoHandler;
         }
     }
 
