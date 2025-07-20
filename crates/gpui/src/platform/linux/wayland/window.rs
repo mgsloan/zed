@@ -454,7 +454,7 @@ impl WaylandWindowStatePtr {
         }
     }
 
-    pub fn handle_toplevel_event(&self, event: xdg_toplevel::Event) -> bool {
+    pub fn handle_toplevel_event(&self, event: xdg_toplevel::Event) {
         match event {
             xdg_toplevel::Event::Configure {
                 width,
@@ -510,21 +510,19 @@ impl WaylandWindowStatePtr {
                     maximized,
                     tiling,
                 });
-
-                false
             }
             xdg_toplevel::Event::Close => {
                 let mut cb = self.callbacks.borrow_mut();
-                if let Some(mut should_close) = cb.should_close.take() {
-                    let result = (should_close)();
-                    cb.should_close = Some(should_close);
-                    if result {
-                        drop(cb);
-                        self.close();
-                    }
-                    result
+                let should_close = if let Some(mut should_close_callback) = cb.should_close.take() {
+                    let should_close = (should_close_callback)();
+                    cb.should_close = Some(should_close_callback);
+                    should_close
                 } else {
                     true
+                };
+                if should_close {
+                    // The close logic will be handled in drop_window()
+                    self.close();
                 }
             }
             xdg_toplevel::Event::WmCapabilities { capabilities } => {
@@ -552,9 +550,8 @@ impl WaylandWindowStatePtr {
 
                 let mut state = self.state.borrow_mut();
                 state.in_progress_window_controls = Some(window_controls);
-                false
             }
-            _ => false,
+            _ => {}
         }
     }
 
