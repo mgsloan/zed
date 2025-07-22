@@ -799,8 +799,6 @@
       "enter": "project_panel::OpenPermanent",
       "escape": "project_panel::ToggleFocus",
       "h": "project_panel::CollapseSelectedEntry",
-      "j": "menu::SelectNext",
-      "k": "menu::SelectPrevious",
       "l": "project_panel::ExpandSelectedEntry",
       "o": "project_panel::OpenPermanent",
       "shift-d": "project_panel::Delete",
@@ -816,34 +814,33 @@
       "[ d": "project_panel::SelectPrevDiagnostic",
       "}": "project_panel::SelectNextDirectory",
       "{": "project_panel::SelectPrevDirectory",
-      "shift-g": "menu::SelectLast",
-      "g g": "menu::SelectFirst",
       "-": "project_panel::SelectParent"
-    }
-  },
-  {
-    "context": "OutlinePanel && not_editing",
-    "bindings": {
-      "j": "menu::SelectNext",
-      "k": "menu::SelectPrevious",
-      "shift-g": "menu::SelectLast",
-      "g g": "menu::SelectFirst"
     }
   },
   {
     "context": "GitPanel && ChangesList",
     "use_key_equivalents": true,
     "bindings": {
-      "k": "menu::SelectPrevious",
-      "j": "menu::SelectNext",
-      "g g": "menu::SelectFirst",
-      "shift-g": "menu::SelectLast",
       "g f": "menu::Confirm",
       "i": "git_panel::FocusEditor",
       "x": "git::ToggleStaged",
       "shift-x": "git::StageAll",
       "g x": "git::StageRange",
       "shift-u": "git::UnstageAll"
+    }
+  },
+  {
+    "context": "menu",
+    "bindings": {
+      // todo! This breaks when editing the filter part of ProjectPanel or OutlinePanel
+      //
+      // todo! Update vim keymap docs for "j k" binding to include !menu
+      //
+      // todo! Also handle "g f" for confirm? What is that for in ChangesList?
+      "k": "menu::SelectPrevious",
+      "j": "menu::SelectNext",
+      "g g": "menu::SelectFirst",
+      "shift-g": "menu::SelectLast"
     }
   },
   {
