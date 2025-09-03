@@ -230,6 +230,12 @@ impl<'a> ChunkSlice<'a> {
         }
     }
 
+    /// Checks if the chunk contains newline characters
+    #[inline(always)]
+    pub fn has_newlines(&self) -> bool {
+        self.newlines != 0
+    }
+
     /// Get the longest row in the chunk and its length in characters.
     /// Calculate the total number of characters in the chunk along the way.
     #[inline(always)]

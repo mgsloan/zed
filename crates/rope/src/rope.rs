@@ -936,6 +936,10 @@ impl Lines<'_> {
         self.current_line.clear();
 
         while let Some(chunk) = self.chunks.peek() {
+            // todo! oof
+            if !chunk.has_newlines() {
+                continue;
+            }
             let chunk_lines = chunk.split('\n');
             if self.reversed {
                 let mut chunk_lines = chunk_lines.rev().peekable();
