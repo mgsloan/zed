@@ -81,15 +81,14 @@ Users may explicitly exclude additional paths and/or file extensions by adding t
 
 ### Data we collect
 
-For open source projects where you have opted-in, Zed may store copies of requests and responses to the Zed AI Prediction service.
-
-This data includes:
+Within open source projects where you have opted-in, Zed may store copies of service requests and responses, including the following data:
 
 - the edit prediction
-- a portion of the buffer content around the cursor
-- a few recent edits
+- text from the current buffer
+- recent edits
 - the current buffer outline
 - diagnostics (errors, warnings, etc) from language servers
+- recently viewed / edited files statistics and cursor positions
 
 ### Data Handling
 
