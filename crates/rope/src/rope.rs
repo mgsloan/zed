@@ -26,6 +26,12 @@ pub struct Rope {
 }
 
 impl Rope {
+    pub fn find_unshared_start(&self, other: &Self) -> Option<(usize, usize)> {
+        self.chunks
+            .find_unshared_start(&other.chunks, &())
+            .map(|(summary, other_summary)| (summary.text.len, other_summary.text.len))
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

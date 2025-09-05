@@ -187,6 +187,71 @@ where
 }
 
 impl<T: Item> SumTree<T> {
+    // todo! return treecursor or Dimension
+    pub fn find_unshared_start(
+        &self,
+        other: &Self,
+        cx: &<T::Summary as Summary>::Context,
+    ) -> Option<(T::Summary, T::Summary)> {
+        if self.ptr_eq(other) {
+            return None;
+        }
+        match (self.0.as_ref(), other.0.as_ref()) {
+            (
+                Node::Internal {
+                    child_trees,
+                    child_summaries,
+                    ..
+                },
+                Node::Internal {
+                    child_trees: other_child_trees,
+                    child_summaries: other_child_summaries,
+                    ..
+                },
+            ) => {
+                let mut count = 0;
+                let mut acc = <T::Summary as Summary>::zero(cx);
+                let mut other_acc = <T::Summary as Summary>::zero(cx);
+                for ((child_tree, child_summary), (other_child_tree, other_child_summary)) in
+                    child_trees
+                        .iter()
+                        .zip(child_summaries)
+                        .zip(other_child_trees.iter().zip(other_child_summaries))
+                {
+                    if !child_tree.ptr_eq(other_child_tree) {
+                        println!("Node {count} is not equal");
+                        if let Some((unshared_start, other_unshared_start)) =
+                            child_tree.find_unshared_start(other_child_tree, cx)
+                        {
+                            <T::Summary as Summary>::add_summary(&mut acc, &unshared_start, cx);
+                            <T::Summary as Summary>::add_summary(
+                                &mut other_acc,
+                                &other_unshared_start,
+                                cx,
+                            );
+                            return Some((acc, other_acc));
+                        }
+                    }
+                    count += 1;
+                    <T::Summary as Summary>::add_summary(&mut acc, child_summary, cx);
+                    <T::Summary as Summary>::add_summary(&mut other_acc, other_child_summary, cx);
+                }
+                None
+            }
+            (_, _) => {
+                println!("Hit leaf");
+                Some((
+                    <T::Summary as Summary>::zero(cx),
+                    <T::Summary as Summary>::zero(cx),
+                ))
+            }
+        }
+    }
+
+    fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn new(cx: &<T::Summary as Summary>::Context) -> Self {
         SumTree(Arc::new(Node::Leaf {
             summary: <T::Summary as Summary>::zero(cx),

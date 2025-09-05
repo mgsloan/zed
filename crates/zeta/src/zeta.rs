@@ -1191,7 +1191,22 @@ impl Event {
                     writeln!(prompt, "User renamed {:?} to {:?}\n", old_path, new_path).unwrap();
                 }
 
-                let diff = language::unified_diff(&old_snapshot.text(), &new_snapshot.text());
+                let now = Instant::now();
+                let diff = if let Some((old_start, new_start)) = old_snapshot
+                    .as_rope()
+                    .find_unshared_start(new_snapshot.as_rope())
+                {
+                    language::unified_diff(
+                        &old_snapshot
+                            .text_for_range(dbg!(old_start)..old_snapshot.len())
+                            .collect::<String>(),
+                        &new_snapshot
+                            .text_for_range(dbg!(new_start)..new_snapshot.len())
+                            .collect::<String>(),
+                    )
+                } else {
+                    language::unified_diff(&old_snapshot.text(), &new_snapshot.text())
+                };
                 if !diff.is_empty() {
                     write!(
                         prompt,
