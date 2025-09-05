@@ -65,7 +65,6 @@ const ZED_PREDICT_DATA_COLLECTION_CHOICE: &str = "zed_predict_data_collection_ch
 const MAX_CONTEXT_TOKENS: usize = 150;
 const MAX_REWRITE_TOKENS: usize = 350;
 const MAX_EVENT_TOKENS: usize = 500;
-const MAX_DIAGNOSTIC_GROUPS: usize = 10;
 
 /// Maximum number of events to track.
 const MAX_EVENT_COUNT: usize = 16;
@@ -418,20 +417,27 @@ impl Zeta {
         let buffer_snapshotted_at = Instant::now();
         let snapshot = self.report_changes_for_buffer(&buffer, project, cx);
         let zeta = cx.entity();
-        let events = self.get_or_init_zeta_project(project, cx).events.clone();
         let client = self.client.clone();
         let llm_token = self.llm_token.clone();
         let app_version = AppVersion::global(cx);
 
-        let can_collect_data = snapshot.file().map_or(CanCollectData::No, |file| {
-            self.can_collect_data_from_file(file, cx)
-        });
-        let git_info = if let CanCollectData::Yes = can_collect_data
-            && let Some(file) = snapshot.file()
-        {
-            git_info_for_file(project, &ProjectPath::from_file(file.as_ref(), cx), cx)
+        let zeta_project = self.get_or_init_zeta_project(project, cx);
+        let mut events = Vec::with_capacity(zeta_project.events.len());
+        events.extend(zeta_project.events.iter().cloned());
+        let events = Arc::new(events);
+
+        // todo! only base this off the events that are actually included in the prompt.
+
+        let (git_info, can_collect_file) = if let Some(file) = snapshot.file() {
+            let can_collect_file = self.can_collect_file(file, cx);
+            let git_info = if can_collect_file {
+                git_info_for_file(project, &ProjectPath::from_file(file.as_ref(), cx), cx)
+            } else {
+                None
+            };
+            (git_info, can_collect_file)
         } else {
-            None
+            (None, false)
         };
 
         let full_path: Arc<Path> = snapshot
@@ -441,24 +447,34 @@ impl Zeta {
         let full_path_str = full_path.to_string_lossy().to_string();
         let cursor_point = cursor.to_point(&snapshot);
         let cursor_offset = cursor_point.to_offset(&snapshot);
-        let make_events_prompt = move || prompt_for_events(&events, MAX_EVENT_TOKENS);
+        let make_events_prompt = {
+            let events = events.clone();
+            move || prompt_for_events(&events, MAX_EVENT_TOKENS)
+        };
         let gather_task = gather_context(
-            project,
             full_path_str,
             &snapshot,
             cursor_point,
             make_events_prompt,
-            can_collect_data,
-            git_info,
             cx,
         );
 
         cx.spawn(async move |this, cx| {
             let GatherContextOutput {
-                body,
+                mut body,
                 editable_range,
+                used_events_count,
             } = gather_task.await?;
             let done_gathering_context_at = Instant::now();
+
+            let used_events = &events[events.len() - used_events_count..events.len()];
+            body.can_collect_data = can_collect_file
+                && this
+                    .read_with(cx, |this, cx| this.can_collect_events(used_events, cx))
+                    .unwrap_or(false);
+            if body.can_collect_data {
+                body.git_info = git_info;
+            }
 
             log::debug!(
                 "Events:\n{}\nExcerpt:\n{:?}",
@@ -945,16 +961,43 @@ impl Zeta {
         new_snapshot
     }
 
-    fn can_collect_data_from_file(
-        &self,
-        file: &Arc<dyn File>,
-        cx: &Context<Self>,
-    ) -> CanCollectData {
-        if self.data_collection_choice.is_enabled() && self.is_file_open_source(file, cx) {
-            CanCollectData::Yes
-        } else {
-            CanCollectData::No
+    fn can_collect_file(&self, file: &Arc<dyn File>, cx: &App) -> bool {
+        self.data_collection_choice.is_enabled() && self.is_file_open_source(file, cx)
+    }
+
+    fn can_collect_events(&self, events: &[Event], cx: &App) -> bool {
+        let mut last_checked_file = None;
+        for event in events {
+            match event {
+                Event::BufferChange {
+                    old_snapshot,
+                    new_snapshot,
+                    ..
+                } => {
+                    if let Some(old_file) = old_snapshot.file()
+                        && let Some(new_file) = new_snapshot.file()
+                    {
+                        if let Some(last_checked_file) = last_checked_file
+                            && Arc::ptr_eq(last_checked_file, old_file)
+                            && Arc::ptr_eq(last_checked_file, new_file)
+                        {
+                            continue;
+                        }
+                        if !self.can_collect_file(old_file, cx) {
+                            return false;
+                        }
+                        if !Arc::ptr_eq(old_file, new_file) && !self.can_collect_file(new_file, cx)
+                        {
+                            return false;
+                        }
+                        last_checked_file = Some(new_file);
+                    } else {
+                        return false;
+                    }
+                }
+            }
         }
+        true
     }
 
     fn is_file_open_source(&self, file: &Arc<dyn File>, cx: &App) -> bool {
@@ -1049,50 +1092,19 @@ fn git_info_for_file(
 pub struct GatherContextOutput {
     pub body: PredictEditsBody,
     pub editable_range: Range<usize>,
+    pub used_events_count: usize,
 }
 
 pub fn gather_context(
-    project: &Entity<Project>,
     full_path_str: String,
     snapshot: &BufferSnapshot,
     cursor_point: language::Point,
-    make_events_prompt: impl FnOnce() -> String + Send + 'static,
-    can_collect_data: CanCollectData,
-    git_info: Option<PredictEditsGitInfo>,
+    make_events_prompt: impl FnOnce() -> (String, usize) + Send + 'static,
     cx: &App,
 ) -> Task<Result<GatherContextOutput>> {
-    let local_lsp_store = project.read(cx).lsp_store().read(cx).as_local();
-    let diagnostic_groups: Vec<(String, serde_json::Value)> = if let CanCollectData::Yes =
-        can_collect_data
-        && let Some(local_lsp_store) = local_lsp_store
-    {
-        snapshot
-            .diagnostic_groups(None)
-            .into_iter()
-            .filter_map(|(language_server_id, diagnostic_group)| {
-                let language_server =
-                    local_lsp_store.running_language_server_for_id(language_server_id)?;
-                let diagnostic_group = diagnostic_group.resolve::<usize>(snapshot);
-                let language_server_name = language_server.name().to_string();
-                let serialized = serde_json::to_value(diagnostic_group).unwrap();
-                Some((language_server_name, serialized))
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-
     cx.background_spawn({
         let snapshot = snapshot.clone();
         async move {
-            let diagnostic_groups = if diagnostic_groups.is_empty()
-                || diagnostic_groups.len() >= MAX_DIAGNOSTIC_GROUPS
-            {
-                None
-            } else {
-                Some(diagnostic_groups)
-            };
-
             let input_excerpt = excerpt_for_cursor_position(
                 cursor_point,
                 &full_path_str,
@@ -1100,15 +1112,15 @@ pub fn gather_context(
                 MAX_REWRITE_TOKENS,
                 MAX_CONTEXT_TOKENS,
             );
-            let input_events = make_events_prompt();
+            let (input_events, used_events_count) = make_events_prompt();
             let editable_range = input_excerpt.editable_range.to_offset(&snapshot);
 
             let body = PredictEditsBody {
                 input_events,
                 input_excerpt: input_excerpt.prompt,
-                can_collect_data: can_collect_data.into(),
-                diagnostic_groups,
-                git_info,
+                can_collect_data: false,
+                diagnostic_groups: None,
+                git_info: None,
                 outline: None,
                 speculated_output: None,
             };
@@ -1116,18 +1128,21 @@ pub fn gather_context(
             Ok(GatherContextOutput {
                 body,
                 editable_range,
+                used_events_count,
             })
         }
     })
 }
 
-fn prompt_for_events(events: &VecDeque<Event>, mut remaining_tokens: usize) -> String {
+fn prompt_for_events(events: &[Event], mut remaining_tokens: usize) -> (String, usize) {
+    let now = Instant::now();
     let mut result = String::new();
-    for event in events.iter().rev() {
+    for (ix, event) in events.iter().rev().enumerate() {
         let event_string = event.to_prompt();
         let event_tokens = tokens_for_bytes(event_string.len());
         if event_tokens > remaining_tokens {
-            break;
+            println!("Time taken for all diffs: {:?}", now.elapsed());
+            return (result, ix);
         }
 
         if !result.is_empty() {
@@ -1136,7 +1151,8 @@ fn prompt_for_events(events: &VecDeque<Event>, mut remaining_tokens: usize) -> S
         result.insert_str(0, &event_string);
         remaining_tokens -= event_tokens;
     }
-    result
+    println!("Time taken for all diffs: {:?}", now.elapsed());
+    return (result, 0);
 }
 
 struct RegisteredBuffer {
@@ -1184,6 +1200,7 @@ impl Event {
                     )
                     .unwrap();
                 }
+                println!("Time taken for one diff: {:?}", now.elapsed());
 
                 prompt
             }
@@ -1987,6 +2004,56 @@ mod tests {
         assert_eq!(
             check_can_collect_data(DataCollectionChoice::Enabled, &project, &buffer, cx).await,
             CanCollectData::No
+        );
+    }
+
+    #[gpui::test]
+    async fn test_no_data_collection_for_events_in_uncollectable_buffers(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree("/worktree1", json!({ "LICENSE": BSD_0_TXT, "main.rs": "" }))
+            .await;
+        fs.insert_tree("/worktree2", json!({ "private.rs": "" }))
+            .await;
+
+        let project = Project::test(
+            fs.clone(),
+            [path!("/worktree1").as_ref(), path!("/worktree2").as_ref()],
+            cx,
+        )
+        .await;
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer("/worktree1/main.rs", cx)
+            })
+            .await
+            .unwrap();
+        let private_buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer("/worktree2/file.rs", cx)
+            })
+            .await
+            .unwrap();
+
+        // this has a side effect of registering the buffer to watch for edits
+        assert_eq!(
+            check_can_collect_data(DataCollectionChoice::Enabled, &project, &private_buffer, cx)
+                .await,
+            CanCollectData::No,
+        );
+
+        cx.background_executor.run_until_parked();
+
+        private_buffer.update(cx, |private_buffer, cx| {
+            private_buffer.edit([(0..0, "An edit for the history!")], None, cx);
+        });
+
+        cx.background_executor.run_until_parked();
+
+        assert_eq!(
+            check_can_collect_data(DataCollectionChoice::Enabled, &project, &buffer, cx).await,
+            CanCollectData::No,
         );
     }
 
