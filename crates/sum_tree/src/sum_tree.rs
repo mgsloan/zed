@@ -486,10 +486,12 @@ impl<T: Item> SumTree<T> {
             *self = other;
         } else if !other.0.is_leaf() || !other.0.items().is_empty() {
             if self.0.height() < other.0.height() {
+                dbg!("HMM1");
                 for tree in other.0.child_trees() {
                     self.append(tree.clone(), cx);
                 }
             } else if let Some(split_tree) = self.push_tree_recursive(other, cx) {
+                dbg!("HMM2");
                 *self = Self::from_child_trees(self.clone(), split_tree, cx);
             }
         }
@@ -915,6 +917,32 @@ mod tests {
     #[ctor::ctor]
     fn init_logger() {
         zlog::init_test();
+    }
+
+    #[test]
+    fn test_append_sharing() {
+        let mut tree1 = SumTree::default();
+        for _ in 0..100 {
+            for i in 0..100u8 {
+                tree1.push(vec![i], &());
+            }
+        }
+        let mut cursor = tree1.cursor::<ByteCount>(&());
+        cursor.seek(&ByteCount(0), Bias::Left);
+        let old_item_ptr = cursor.item().unwrap().as_ptr();
+        drop(cursor);
+
+        let mut tree2 = SumTree::default();
+        for _ in 0..100u8 {
+            for i in 100..200u8 {
+                tree2.push(vec![i], &());
+            }
+        }
+        tree1.append(tree2, &());
+
+        let mut cursor = tree1.cursor::<ByteCount>(&());
+        cursor.seek(&ByteCount(0), Bias::Left);
+        assert_eq!(cursor.item().unwrap().as_ptr(), old_item_ptr);
     }
 
     #[test]
@@ -1348,7 +1376,56 @@ mod tests {
     struct Count(usize);
 
     #[derive(Ord, PartialOrd, Default, Eq, PartialEq, Clone, Debug)]
+    struct ByteCount(usize);
+
+    #[derive(Ord, PartialOrd, Default, Eq, PartialEq, Clone, Debug)]
     struct Sum(usize);
+
+    impl Item for Vec<u8> {
+        type Summary = BytesSummary;
+
+        fn summary(&self, _cx: &()) -> Self::Summary {
+            BytesSummary {
+                count: self.len(),
+                sum: self.iter().map(|x| *x as usize).sum(),
+            }
+        }
+    }
+
+    #[derive(Clone, Default, Debug)]
+    pub struct BytesSummary {
+        count: usize,
+        sum: usize,
+    }
+
+    impl Summary for BytesSummary {
+        type Context = ();
+
+        fn zero(_cx: &()) -> Self {
+            Default::default()
+        }
+
+        fn add_summary(&mut self, other: &Self, _: &()) {
+            self.count += other.count;
+            self.sum += other.sum;
+        }
+    }
+
+    impl Dimension<'_, BytesSummary> for ByteCount {
+        fn zero(_cx: &()) -> Self {
+            Default::default()
+        }
+
+        fn add_summary(&mut self, summary: &BytesSummary, _: &()) {
+            self.0 += summary.count;
+        }
+    }
+
+    impl SeekTarget<'_, BytesSummary, BytesSummary> for ByteCount {
+        fn cmp(&self, cursor_location: &BytesSummary, _: &()) -> Ordering {
+            self.0.cmp(&cursor_location.count)
+        }
+    }
 
     impl Item for u8 {
         type Summary = IntegersSummary;
