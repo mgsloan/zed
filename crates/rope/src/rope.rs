@@ -201,6 +201,22 @@ impl Rope {
         }
     }
 
+    fn push_whole_chunk(&mut self, chunk: &Chunk) {
+        // NOTE: This method attempts to preserve whole chunks when possible, but due to
+        // Chunk using ArrayString internally (not Arc<str>), clone() still creates new
+        // memory allocations. True chunk sharing would require changing Chunk to use
+        // reference-counted strings, which would be a significant architectural change.
+        if self.chunks.is_empty()
+            || self.chunks.last().unwrap().text.len() + chunk.text.len() > chunk::MAX_BASE
+        {
+            // Can't merge with last chunk, so add as new chunk
+            self.chunks.push(chunk.clone(), &());
+        } else {
+            // Need to merge with last chunk
+            self.push_chunk(chunk.as_slice());
+        }
+    }
+
     pub fn push_front(&mut self, text: &str) {
         let suffix = mem::replace(self, Rope::from(text));
         self.append(suffix);
@@ -544,7 +560,13 @@ impl<'a> Cursor<'a> {
         if let Some(start_chunk) = self.chunks.item() {
             let start_ix = self.offset - self.chunks.start();
             let end_ix = cmp::min(end_offset, self.chunks.end()) - self.chunks.start();
-            slice.push_chunk(start_chunk.slice(start_ix..end_ix));
+
+            // Optimize: if we're slicing the entire chunk, reuse it directly
+            if start_ix == 0 && end_ix == start_chunk.text.len() {
+                slice.push_whole_chunk(start_chunk);
+            } else {
+                slice.push_chunk(start_chunk.slice(start_ix..end_ix));
+            }
         }
 
         if end_offset > self.chunks.end() {
@@ -554,7 +576,13 @@ impl<'a> Cursor<'a> {
             });
             if let Some(end_chunk) = self.chunks.item() {
                 let end_ix = end_offset - self.chunks.start();
-                slice.push_chunk(end_chunk.slice(0..end_ix));
+
+                // Optimize: if we're slicing the entire chunk, reuse it directly
+                if end_ix == end_chunk.text.len() {
+                    slice.push_whole_chunk(end_chunk);
+                } else {
+                    slice.push_chunk(end_chunk.slice(0..end_ix));
+                }
             }
         }
 
