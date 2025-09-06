@@ -410,6 +410,7 @@ where
             leaf_item_summaries: ArrayVec::new(),
             leaf_summary: <T::Summary as Summary>::zero(self.cx),
         };
+        self.ascend();
         self.seek_internal(end, bias, &mut slice);
         slice.tree
     }
@@ -537,6 +538,14 @@ where
         }
 
         target.cmp(&end, self.cx) == Ordering::Equal
+    }
+
+    fn ascend(&mut self) {
+        if let Some(entry) = self.stack.last() {
+            if entry.index == 0 {
+                self.stack.pop();
+            }
+        }
     }
 }
 

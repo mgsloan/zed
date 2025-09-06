@@ -542,20 +542,32 @@ impl<'a> Cursor<'a> {
 
         let mut slice = Rope::new();
         if let Some(start_chunk) = self.chunks.item() {
-            let start_ix = self.offset - self.chunks.start();
-            let end_ix = cmp::min(end_offset, self.chunks.end()) - self.chunks.start();
-            slice.push_chunk(start_chunk.slice(start_ix..end_ix));
+            let len = start_chunk.text.len();
+            let start = self.chunks.start();
+            let end = start + len;
+            let start_ix = self.offset - start;
+            if end_offset < end {
+                slice.push_chunk(start_chunk.slice(start_ix..end_offset - start));
+                self.offset = end_offset;
+                return slice;
+            } else if start_ix != 0 {
+                slice.push_chunk(start_chunk.slice(start_ix..len));
+                if end_offset > end {
+                    self.chunks.next();
+                } else {
+                    self.offset = end_offset;
+                    return slice;
+                }
+            }
         }
 
-        if end_offset > self.chunks.end() {
-            self.chunks.next();
-            slice.append(Rope {
-                chunks: self.chunks.slice(&end_offset, Bias::Right),
-            });
-            if let Some(end_chunk) = self.chunks.item() {
-                let end_ix = end_offset - self.chunks.start();
-                slice.push_chunk(end_chunk.slice(0..end_ix));
-            }
+        slice.append(Rope {
+            chunks: self.chunks.slice(&end_offset, Bias::Right),
+        });
+        if let Some(end_chunk) = self.chunks.item() {
+            // todo! uhhh
+            let end_ix = end_offset - self.chunks.start();
+            slice.push_chunk(end_chunk.slice(0..end_ix));
         }
 
         self.offset = end_offset;
