@@ -1175,7 +1175,33 @@ impl Event {
                     writeln!(prompt, "User renamed {:?} to {:?}\n", old_path, new_path).unwrap();
                 }
 
-                let diff = language::unified_diff(&old_snapshot.text(), &new_snapshot.text());
+                let now = Instant::now();
+                let mut old_chunks = old_snapshot.as_rope().chunks();
+                let mut new_chunks = new_snapshot.as_rope().chunks();
+                let mut offsets = None;
+                while let Some(old_chunk) = old_chunks.next()
+                    && let Some(new_chunk) = new_chunks.next()
+                {
+                    dbg!(old_chunk.as_ptr(), new_chunk.as_ptr());
+                    if old_chunk.as_ptr() != new_chunk.as_ptr()
+                        || old_chunk.len() != new_chunk.len()
+                    {
+                        offsets = Some((old_chunks.offset(), new_chunks.offset()));
+                        break;
+                    }
+                }
+                let Some((old_offset, new_offset)) = dbg!(offsets) else {
+                    return prompt;
+                };
+
+                let diff = language::unified_diff(
+                    &old_snapshot
+                        .text_for_range(old_offset..old_snapshot.len())
+                        .collect::<String>(),
+                    &new_snapshot
+                        .text_for_range(new_offset..new_snapshot.len())
+                        .collect::<String>(),
+                );
                 if !diff.is_empty() {
                     write!(
                         prompt,
