@@ -65,6 +65,7 @@ impl Rope {
     pub fn slice(&self, range: Range<usize>) -> Rope {
         let mut cursor = self.cursor(0);
         cursor.seek_forward(range.start);
+        dbg!("SEEEEKED!");
         cursor.slice(range.end)
     }
 
@@ -540,22 +541,73 @@ impl<'a> Cursor<'a> {
             end_offset
         );
 
+        println!(
+            "CURSOR SLICE: from offset {} to {}, range_len={}",
+            self.offset,
+            end_offset,
+            end_offset - self.offset
+        );
+
         let mut slice = Rope::new();
-        if let Some(start_chunk) = self.chunks.item() {
-            let start_ix = self.offset - self.chunks.start();
-            let end_ix = cmp::min(end_offset, self.chunks.end()) - self.chunks.start();
-            slice.push_chunk(start_chunk.slice(start_ix..end_ix));
+
+        println!(
+            "  MIDDLE CHUNKS: slicing from {} to {}",
+            self.chunks.start(),
+            end_offset
+        );
+        let middle_rope = Rope {
+            chunks: self.chunks.slice(&end_offset, Bias::Right),
+        };
+        println!(
+            "    Middle rope has {} chunks",
+            middle_rope.chunks().count()
+        );
+        for (i, chunk) in middle_rope.chunks().enumerate() {
+            println!(
+                "      Middle chunk {}: len={}, ptr={:p}",
+                i,
+                chunk.len(),
+                chunk.as_ptr()
+            );
         }
 
-        if end_offset > self.chunks.end() {
-            self.chunks.next();
-            slice.append(Rope {
-                chunks: self.chunks.slice(&end_offset, Bias::Right),
-            });
-            if let Some(end_chunk) = self.chunks.item() {
-                let end_ix = end_offset - self.chunks.start();
+        slice.append(middle_rope);
+        println!("    After appending middle chunks:");
+        for (i, chunk) in slice.chunks().enumerate() {
+            println!(
+                "      Slice chunk {}: len={}, ptr={:p}",
+                i,
+                chunk.len(),
+                chunk.as_ptr()
+            );
+        }
+
+        if let Some(end_chunk) = self.chunks.item() {
+            let end_ix = end_offset - self.chunks.start();
+            println!(
+                "  END CHUNK: len={}, ptr={:p}, end_ix={}",
+                end_chunk.text.len(),
+                end_chunk.text.as_ptr(),
+                end_ix
+            );
+
+            if end_ix == end_chunk.text.len() {
+                println!("    WHOLE END CHUNK - should preserve pointer");
+                slice.chunks.push(end_chunk.clone(), &());
+            } else {
+                println!("    PARTIAL END CHUNK - will create new chunk");
                 slice.push_chunk(end_chunk.slice(0..end_ix));
             }
+        }
+
+        println!("  FINAL SLICE: {} chunks", slice.chunks().count());
+        for (i, chunk) in slice.chunks().enumerate() {
+            println!(
+                "    Final chunk {}: len={}, ptr={:p}",
+                i,
+                chunk.len(),
+                chunk.as_ptr()
+            );
         }
 
         self.offset = end_offset;
@@ -1452,6 +1504,25 @@ mod tests {
     #[ctor::ctor]
     fn init_logger() {
         zlog::init_test();
+    }
+
+    #[test]
+    fn test_append_sharing() {
+        let ix = 12 * 4 * 2;
+        let mut rope = Rope::from(" ".repeat(ix));
+        let first_chunk_ptr = rope.chunks().next().unwrap().as_ptr();
+        rope.append(Rope::from("yadda yadda"));
+        assert_eq!(rope.chunks().next().unwrap().as_ptr(), first_chunk_ptr);
+    }
+
+    #[test]
+    fn test_slice_sharing() {
+        let ix = 12 * 4 * 4;
+        let rope = Rope::from(" ".repeat(ix));
+        let first_chunk_ptr = rope.chunks().next().unwrap().as_ptr();
+        dbg!(first_chunk_ptr);
+        let sliced = rope.slice(0..ix);
+        assert_eq!(sliced.chunks().next().unwrap().as_ptr(), first_chunk_ptr);
     }
 
     #[test]

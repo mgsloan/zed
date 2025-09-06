@@ -410,6 +410,7 @@ where
             leaf_item_summaries: ArrayVec::new(),
             leaf_summary: <T::Summary as Summary>::zero(self.cx),
         };
+        self.ascend();
         self.seek_internal(end, bias, &mut slice);
         slice.tree
     }
@@ -537,6 +538,14 @@ where
         }
 
         target.cmp(&end, self.cx) == Ordering::Equal
+    }
+
+    fn ascend(&mut self) {
+        if let Some(entry) = self.stack.last() {
+            if entry.index == 0 {
+                self.stack.pop();
+            }
+        }
     }
 }
 
@@ -730,6 +739,7 @@ impl<T: Item> SeekAggregate<'_, T> for () {
 impl<T: Item> SeekAggregate<'_, T> for SliceSeekAggregate<T> {
     fn begin_leaf(&mut self) {}
     fn end_leaf(&mut self, cx: &<T::Summary as Summary>::Context) {
+        dbg!("END LEAF");
         self.tree.append(
             SumTree(Arc::new(Node::Leaf {
                 summary: mem::replace(&mut self.leaf_summary, <T::Summary as Summary>::zero(cx)),
@@ -740,6 +750,7 @@ impl<T: Item> SeekAggregate<'_, T> for SliceSeekAggregate<T> {
         );
     }
     fn push_item(&mut self, item: &T, summary: &T::Summary, cx: &<T::Summary as Summary>::Context) {
+        dbg!("PUSH ITEM");
         self.leaf_items.push(item.clone());
         self.leaf_item_summaries.push(summary.clone());
         Summary::add_summary(&mut self.leaf_summary, summary, cx);
@@ -750,6 +761,7 @@ impl<T: Item> SeekAggregate<'_, T> for SliceSeekAggregate<T> {
         _: &T::Summary,
         cx: &<T::Summary as Summary>::Context,
     ) {
+        dbg!("PUSH TREE");
         self.tree.append(tree.clone(), cx);
     }
 }

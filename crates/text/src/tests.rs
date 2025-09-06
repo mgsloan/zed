@@ -15,6 +15,19 @@ fn init_logger() {
 }
 
 #[test]
+fn test_edit_sharing() {
+    let mut buffer = Buffer::new(0, BufferId::new(1).unwrap(), " ".repeat(3000));
+    let rope_clone = buffer.as_rope().clone();
+    let before = rope_clone.chunks().next().unwrap();
+    let before_ptr = before.as_ptr();
+    buffer.edit([(2800..2800, "def")]);
+    let after = buffer.as_rope().chunks().next().unwrap();
+    let after_ptr = after.as_ptr();
+    assert_eq!(before, after);
+    assert_eq!(before_ptr, after_ptr,);
+}
+
+#[test]
 fn test_edit() {
     let mut buffer = Buffer::new(0, BufferId::new(1).unwrap(), "abc");
     assert_eq!(buffer.text(), "abc");
