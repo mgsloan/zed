@@ -15,6 +15,70 @@ fn init_logger() {
 }
 
 #[test]
+fn test_edit_sharing() {
+    let mut buffer = Buffer::new(0, BufferId::new(1).unwrap(), " ".repeat(3000));
+    let rope_clone = buffer.as_rope().clone();
+
+    // Debug: Show initial rope structure
+    println!("=== BEFORE EDIT ===");
+    println!("Total length: {}", rope_clone.len());
+    println!("Chunk count: {}", rope_clone.chunks().count());
+    for (i, chunk) in rope_clone.chunks().enumerate() {
+        println!(
+            "Chunk {}: len={}, ptr={:p}, content_preview='{}'",
+            i,
+            chunk.len(),
+            chunk.as_ptr(),
+            &chunk[..chunk.len().min(20)]
+        );
+    }
+
+    let before = rope_clone.chunks().next().unwrap();
+    let before_ptr = before.as_ptr();
+    println!(
+        "First chunk before edit: len={}, ptr={:p}",
+        before.len(),
+        before_ptr
+    );
+
+    buffer.edit([(2800..2800, "def")]);
+
+    // Debug: Show rope structure after edit
+    println!("\n=== AFTER EDIT ===");
+    let after_rope = buffer.as_rope();
+    println!("Total length: {}", after_rope.len());
+    println!("Chunk count: {}", after_rope.chunks().count());
+    for (i, chunk) in after_rope.chunks().enumerate() {
+        println!(
+            "Chunk {}: len={}, ptr={:p}, content_preview='{}'",
+            i,
+            chunk.len(),
+            chunk.as_ptr(),
+            &chunk[..chunk.len().min(20)]
+        );
+    }
+
+    let after = buffer.as_rope().chunks().next().unwrap();
+    let after_ptr = after.as_ptr();
+    println!(
+        "First chunk after edit: len={}, ptr={:p}",
+        after.len(),
+        after_ptr
+    );
+
+    println!("\n=== COMPARISON ===");
+    println!("Chunks content equal: {}", before == after);
+    println!("Chunks pointer equal: {}", before_ptr == after_ptr);
+    println!("Expected sharing: first chunk should be reused since edit is at offset 2800");
+
+    assert_eq!(before, after);
+    assert_eq!(
+        before_ptr, after_ptr,
+        "First chunk should be reused when edit is after it"
+    );
+}
+
+#[test]
 fn test_edit() {
     let mut buffer = Buffer::new(0, BufferId::new(1).unwrap(), "abc");
     assert_eq!(buffer.text(), "abc");

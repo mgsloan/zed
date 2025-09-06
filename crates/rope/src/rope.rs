@@ -1455,6 +1455,16 @@ mod tests {
     }
 
     #[test]
+    fn test_sharing() {
+        let mut rope = Rope::from(
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.",
+        );
+        let first_chunk_ptr = rope.chunks().next().unwrap().as_ptr();
+        rope.append(Rope::from("yadda yadda"));
+        assert_eq!(rope.chunks().next().unwrap().as_ptr(), first_chunk_ptr);
+    }
+
+    #[test]
     fn test_all_4_byte_chars() {
         let mut rope = Rope::new();
         let text = "🏀".repeat(256);
