@@ -73,6 +73,10 @@ pub trait Dimension<'a, S: Summary>: Clone {
     }
 }
 
+pub trait SubtractableDimension<'a, S: Summary>: Dimension<'a, S> {
+    fn subtract_summary(&mut self, summary: &'a S, cx: &S::Context);
+}
+
 impl<'a, T: Summary> Dimension<'a, T> for T {
     fn zero(cx: &T::Context) -> Self {
         Summary::zero(cx)

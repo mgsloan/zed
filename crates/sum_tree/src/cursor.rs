@@ -538,6 +538,62 @@ where
 
         target.cmp(&end, self.cx) == Ordering::Equal
     }
+
+    /// Returns whether we found the item you were seeking for
+    #[allow(dead_code)]
+    fn seek_backward(&mut self, target: &dyn SeekTarget<'a, T::Summary, D>, bias: Bias) -> bool {
+        assert!(
+            target.cmp(&self.position, self.cx) <= Ordering::Equal,
+            "cannot seek forward",
+        );
+
+        if !self.did_seek {
+            self.did_seek = true;
+            // todo!
+            self.stack.push(StackEntry {
+                tree: self.tree,
+                index: 0,
+                position: D::zero(self.cx),
+            });
+        }
+
+        let mut ascending = false;
+        'outer: while !self.stack.is_empty() {
+            match entry.tree.0.as_ref() {
+                Node::Internal {
+                    ref child_summaries,
+                    ref child_trees,
+                    ..
+                } => {
+                    if ascending && entry.index != 0 {
+                        entry.index -= 1;
+                        entry.position = self.position.clone();
+                    }
+
+                    if !(ascending && entry.index == 0) {
+                        for (child_tree, child_summary) in child_trees[..entry.index + 1]
+                            .iter()
+                            .rev()
+                            .zip(child_summaries[..entry.index + 1].iter().rev())
+                        {
+                            todo!();
+                        }
+                    }
+                }
+                Node::Leaf {
+                    items,
+                    item_summaries,
+                    ..
+                } => {
+                    todo!();
+                }
+            }
+            self.stack.pop();
+            ascending = true;
+        }
+
+        todo!()
+    }
 }
 
 impl<'a, T: Item> Iter<'a, T> {
