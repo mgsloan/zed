@@ -1,0 +1,32 @@
+[package]
+name = "zeta_context"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "zeta_context"
+path = "src/zeta_context.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+ignore.workspace = true
+indoc.workspace = true
+itertools.workspace = true
+language.workspace = true
+log.workspace = true
+multimap.workspace = true
+once_cell.workspace = true
+ordered-float.workspace = true
+priority-queue.workspace = true
+rand.workspace = true
+regex.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+strum.workspace = true
+tree-sitter.workspace = true
+walkdir.workspace = true
