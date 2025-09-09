@@ -17,9 +17,7 @@
 (function_declaration
     "func" @context
     name: (identifier) @name
-    parameters: (parameter_list
-      "("
-      ")")) @item
+    parameters: (_) @signature) @item
 
 (method_declaration
     "func" @context
@@ -30,9 +28,8 @@
             type: (_) @context)
         ")" @context)
     name: (field_identifier) @name
-    parameters: (parameter_list
-      "("
-      ")")) @item
+    parameters: (_) @signature
+    result: (_) @signature) @item
 
 (const_declaration
     "const" @context
@@ -57,9 +54,7 @@
 
 (method_elem
     name: (_) @name
-    parameters: (parameter_list
-      "(" @context
-      ")" @context)) @item
+    parameters: (_) @signature) @item
 
 ; Fields declarations may define multiple fields, and so @item is on the
 ; declarator so they each get distinct ranges.

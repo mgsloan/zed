@@ -9,6 +9,8 @@ prHygiene({
   },
 });
 
+function add(x: number, y: number): number {}
+
 const RELEASE_NOTES_PATTERN = /Release Notes:\r?\n\s+-/gm;
 const body = danger.github.pr.body;
 

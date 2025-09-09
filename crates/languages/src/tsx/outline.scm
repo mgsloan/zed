@@ -14,18 +14,18 @@
     "async"? @context
     "function" @context
     name: (_) @name
-    parameters: (formal_parameters
-      "(" @context
-      ")" @context)) @item
+    type_parameters: (_)? @signature
+    parameters: (_) @signature
+    return_type: (_) @signature) @item
 
 (generator_function_declaration
     "async"? @context
     "function" @context
     "*" @context
     name: (_) @name
-    parameters: (formal_parameters
-      "(" @context
-      ")" @context)) @item
+    type_parameters: (_)? @signature
+    parameters: (_) @signature
+    return_type: (_)? @signature) @item
 
 (interface_declaration
     "interface" @context
@@ -68,9 +68,9 @@
         (accessibility_modifier)
     ]* @context
     name: (_) @name
-    parameters: (formal_parameters
-      "(" @context
-      ")" @context)) @item
+    type_parameters: (_)? @signature
+    parameters: (_) @signature
+    return_type: (_)? @signature) @item
 
 (public_field_definition
     [
