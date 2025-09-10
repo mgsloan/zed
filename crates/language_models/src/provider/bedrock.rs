@@ -140,7 +140,6 @@ const ZED_AWS_ENDPOINT_VAR: &str = "ZED_AWS_ENDPOINT";
 
 pub struct State {
     credentials: Option<BedrockCredentials>,
-    settings: Option<AmazonBedrockSettings>,
     credentials_from_env: bool,
     _subscription: Subscription,
 }
@@ -156,7 +155,6 @@ impl State {
             this.update(cx, |this, cx| {
                 this.credentials = None;
                 this.credentials_from_env = false;
-                this.settings = None;
                 cx.notify();
             })
         })
@@ -251,7 +249,6 @@ impl BedrockLanguageModelProvider {
     pub fn new(http_client: Arc<dyn HttpClient>, cx: &mut App) -> Self {
         let state = cx.new(|cx| State {
             credentials: None,
-            settings: Some(AllLanguageModelSettings::get_global(cx).bedrock.clone()),
             credentials_from_env: false,
             _subscription: cx.observe_global::<SettingsStore>(|_, cx| {
                 cx.notify();
@@ -386,16 +383,14 @@ impl BedrockModel {
     fn get_or_init_client(&self, cx: &AsyncApp) -> anyhow::Result<&BedrockClient> {
         self.client
             .get_or_try_init_blocking(|| {
+                let settings = &AllLanguageModelSettings::get_global(cx).bedrock;
+                let auth_method =
+
                 let (auth_method, credentials, endpoint, region, settings) =
-                    cx.read_entity(&self.state, |state, _cx| {
-                        let auth_method = state
-                            .settings
-                            .as_ref()
-                            .and_then(|s| s.authentication_method.clone());
-
-                        let endpoint = state.settings.as_ref().and_then(|s| s.endpoint.clone());
-
-                        let region = state.get_region();
+                    cx.read_entity(&self.state, |state, cx| {
+                        let auth_method = &settings.authentication_method;
+                        let endpoint = &settings.endpoint;
+                        let region = state.get_region(settings);
 
                         (
                             auth_method,
