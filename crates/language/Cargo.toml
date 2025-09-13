@@ -31,6 +31,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 clock.workspace = true
 collections.workspace = true
+diffy = "0.4.2"
 ec4rs.workspace = true
 fs.workspace = true
 futures.workspace = true
@@ -57,6 +58,7 @@ smallvec.workspace = true
 smol.workspace = true
 streaming-iterator.workspace = true
 strsim.workspace = true
+strum.workspace = true
 sum_tree.workspace = true
 task.workspace = true
 text.workspace = true
@@ -69,7 +71,6 @@ unicase = "2.6"
 util.workspace = true
 watch.workspace = true
 workspace-hack.workspace = true
-diffy = "0.4.2"
 
 [dev-dependencies]
 collections = { workspace = true, features = ["test-support"] }

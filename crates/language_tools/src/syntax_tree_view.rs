@@ -1,3 +1,4 @@
+use collections::HashMap;
 use command_palette_hooks::CommandPaletteFilter;
 use editor::{Anchor, Editor, ExcerptId, SelectionEffects, scroll::Autoscroll};
 use gpui::{
@@ -6,8 +7,9 @@ use gpui::{
     ParentElement, Render, ScrollStrategy, SharedString, Styled, UniformListScrollHandle,
     WeakEntity, Window, actions, div, rems, uniform_list,
 };
-use language::{Buffer, OwnedSyntaxLayer};
-use std::{any::TypeId, mem, ops::Range};
+use language::{Buffer, Grammar, OwnedSyntaxLayer, TreeSitterQueryType};
+use std::{any::TypeId, mem, ops::Range, sync::Arc};
+use strum::IntoEnumIterator;
 use theme::ActiveTheme;
 use tree_sitter::{Node, TreeCursor};
 use ui::{
@@ -97,6 +99,7 @@ pub struct SyntaxTreeView {
     selected_descendant_ix: Option<usize>,
     hovered_descendant_ix: Option<usize>,
     focus_handle: FocusHandle,
+    selected_query_type: TreeSitterQueryType,
 }
 
 pub struct SyntaxTreeToolbarItemView {
@@ -140,6 +143,7 @@ impl SyntaxTreeView {
             hovered_descendant_ix: None,
             selected_descendant_ix: None,
             focus_handle: cx.focus_handle(),
+            selected_query_type: TreeSitterQueryType::Highlights,
         };
 
         this.handle_item_updated(active_item, window, cx);
@@ -319,6 +323,35 @@ impl SyntaxTreeView {
             if !cursor.goto_parent() {
                 break;
             }
+        }
+
+        let snapshot = buffer.read(cx).snapshot();
+        let mut matches = snapshot.syntax.matches(
+            range,
+            &snapshot,
+            Grammar::query_fn(self.selected_query_type),
+        );
+
+        text::debug::GlobalDebugRanges::with_locked(|debug_ranges| debug_ranges.ranges.clear());
+
+        let mut capture_debug_ranges: HashMap<Arc<str>, Vec<Range<usize>>> = HashMap::default();
+        while let Some(mat) = matches.peek() {
+            let Some(query) = matches.grammars()[mat.grammar_index].query(self.selected_query_type)
+            else {
+                matches.advance();
+                continue;
+            };
+            for capture in mat.captures {
+                let name = query.capture_names()[capture.index as usize].into();
+                capture_debug_ranges
+                    .entry(name)
+                    .or_default()
+                    .push(capture.node.byte_range());
+            }
+            matches.advance();
+        }
+        for (name, ranges) in capture_debug_ranges {
+            snapshot.debug_with_key(&name, &ranges, &name);
         }
 
         let descendant_ix = cursor.descendant_index();
@@ -577,6 +610,7 @@ impl Item for SyntaxTreeView {
     {
         Some(cx.new(|cx| {
             let mut clone = Self::new(self.workspace_handle.clone(), None, window, cx);
+            clone.selected_query_type = self.selected_query_type;
             if let Some(editor) = &self.editor {
                 clone.set_editor(editor.editor.clone(), window, cx)
             }
@@ -679,6 +713,53 @@ impl SyntaxTreeToolbarItemView {
             })
         })
     }
+
+    fn render_query_type_dropdown(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<PopoverMenu<ContextMenu>> {
+        let tree_view = self.tree_view.as_ref()?;
+        let current_query_type = tree_view.read(cx).selected_query_type;
+
+        let view = cx.entity();
+        Some(
+            PopoverMenu::new("Query Type")
+                .trigger(
+                    ButtonLike::new("query_type_selector")
+                        .child(Label::new(format!("{:?}", current_query_type)))
+                        .child(Label::new(" ")),
+                )
+                .menu(move |window, cx| {
+                    ContextMenu::build(window, cx, |mut menu, window, _| {
+                        for query_type in TreeSitterQueryType::iter() {
+                            menu = menu.entry(
+                                format!("{:?}", query_type),
+                                None,
+                                window.handler_for(&view, move |view, window, cx| {
+                                    view.select_query_type(query_type, window, cx);
+                                }),
+                            );
+                        }
+                        menu
+                    })
+                    .into()
+                }),
+        )
+    }
+
+    fn select_query_type(
+        &mut self,
+        query_type: TreeSitterQueryType,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<()> {
+        let tree_view = self.tree_view.as_ref()?;
+        tree_view.update(cx, |view, cx| {
+            view.selected_query_type = query_type;
+            cx.notify();
+            Some(())
+        })
+    }
 }
 
 fn format_node_range(node: Node) -> String {
@@ -698,6 +779,7 @@ impl Render for SyntaxTreeToolbarItemView {
         h_flex()
             .gap_1()
             .children(self.render_menu(cx))
+            .children(self.render_query_type_dropdown(cx))
             .children(self.render_update_button(cx))
     }
 }

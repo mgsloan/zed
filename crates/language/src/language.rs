@@ -59,6 +59,7 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
     },
 };
+use strum::EnumIter;
 use syntax_map::{QueryCursorHandle, SyntaxSnapshot};
 use task::RunnableTag;
 pub use task_context::{ContextLocation, ContextProvider, RunnableRange};
@@ -1126,6 +1127,22 @@ pub struct Grammar {
     pub(crate) highlight_map: Mutex<HighlightMap>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, EnumIter)]
+pub enum TreeSitterQueryType {
+    Error,
+    Highlights,
+    Brackets,
+    Redactions,
+    Runnables,
+    Indents,
+    Outline,
+    TextObjects,
+    Embedding,
+    Injections,
+    Overrides,
+    Debugger,
+}
+
 struct IndentConfig {
     query: Query,
     indent_capture_ix: u32,
@@ -2040,6 +2057,34 @@ impl Grammar {
 
     pub fn debug_variables_config(&self) -> Option<&DebugVariablesConfig> {
         self.debug_variables_config.as_ref()
+    }
+
+    pub fn query(&self, query_type: TreeSitterQueryType) -> Option<&Query> {
+        Self::query_fn(query_type)(self)
+    }
+
+    pub fn query_fn(query_type: TreeSitterQueryType) -> fn(&Self) -> Option<&Query> {
+        use TreeSitterQueryType::*;
+        match query_type {
+            Error => |this: &Self| this.error_query.as_ref(),
+            Highlights => |this: &Self| this.highlights_query.as_ref(),
+            Brackets => |this: &Self| this.brackets_config.as_ref().map(|config| &config.query),
+            Redactions => |this: &Self| this.redactions_config.as_ref().map(|config| &config.query),
+            Runnables => |this: &Self| this.runnable_config.as_ref().map(|config| &config.query),
+            Indents => |this: &Self| this.indents_config.as_ref().map(|config| &config.query),
+            Outline => |this: &Self| this.outline_config.as_ref().map(|config| &config.query),
+            TextObjects => {
+                |this: &Self| this.text_object_config.as_ref().map(|config| &config.query)
+            }
+            Embedding => |this: &Self| this.embedding_config.as_ref().map(|config| &config.query),
+            Injections => |this: &Self| this.injection_config.as_ref().map(|config| &config.query),
+            Overrides => |this: &Self| this.override_config.as_ref().map(|config| &config.query),
+            Debugger => |this: &Self| {
+                this.debug_variables_config
+                    .as_ref()
+                    .map(|config| &config.query)
+            },
+        }
     }
 }
 
