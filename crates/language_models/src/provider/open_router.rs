@@ -94,7 +94,7 @@ pub struct OpenRouterLanguageModelProvider {
 pub struct State {
     api_key_state: ApiKeyState,
     http_client: Arc<dyn HttpClient>,
-    available_models: Vec<open_router::Model>,
+    fetched_models: Vec<open_router::Model>,
     fetch_models_task: Option<Task<Result<(), LanguageModelCompletionError>>>,
 }
 
@@ -105,8 +105,17 @@ impl State {
 
     fn set_api_key(&mut self, api_key: Option<String>, cx: &mut Context<Self>) -> Task<Result<()>> {
         let api_url = OpenRouterLanguageModelProvider::api_url(cx);
-        self.api_key_state
-            .store(api_url, api_key, |this| &mut this.api_key_state, cx)
+        let task = self
+            .api_key_state
+            .store(api_url, api_key, |this| &mut this.api_key_state, cx);
+
+        self.fetched_models.clear();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| this.restart_fetch_models_task(cx))
+                .ok();
+            result
+        })
     }
 
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
@@ -148,7 +157,7 @@ impl State {
                 })?;
 
             this.update(cx, |this, cx| {
-                this.available_models = models;
+                this.fetched_models = models;
                 cx.notify();
             })
             .map_err(|e| LanguageModelCompletionError::Other(e))?;
@@ -161,8 +170,6 @@ impl State {
         if self.is_authenticated() {
             let task = self.fetch_models(cx);
             self.fetch_models_task.replace(task);
-        } else {
-            self.available_models = Vec::new();
         }
     }
 }
@@ -176,8 +183,12 @@ impl OpenRouterLanguageModelProvider {
                     let current_settings = OpenRouterLanguageModelProvider::settings(cx);
                     let settings_changed = current_settings != &last_settings;
                     if settings_changed {
+                        let url_changed = last_settings.api_url != current_settings.api_url;
                         last_settings = current_settings.clone();
-                        this.authenticate(cx).detach();
+                        if url_changed {
+                            this.fetched_models.clear();
+                            this.authenticate(cx).detach();
+                        }
                         cx.notify();
                     }
                 }
@@ -186,7 +197,7 @@ impl OpenRouterLanguageModelProvider {
             State {
                 api_key_state: ApiKeyState::new(Self::api_url(cx)),
                 http_client: http_client.clone(),
-                available_models: Vec::new(),
+                fetched_models: Vec::new(),
                 fetch_models_task: None,
             }
         });
@@ -243,7 +254,7 @@ impl LanguageModelProvider for OpenRouterLanguageModelProvider {
     }
 
     fn provided_models(&self, cx: &App) -> Vec<Arc<dyn LanguageModel>> {
-        let mut models_from_api = self.state.read(cx).available_models.clone();
+        let mut models_from_api = self.state.read(cx).fetched_models.clone();
         let mut settings_models = Vec::new();
 
         for model in &Self::settings(cx).available_models {
