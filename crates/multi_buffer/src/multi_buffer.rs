@@ -8081,6 +8081,24 @@ pub mod debug {
         }
     }
 
+    impl<T: ToOffset, const N: usize> ToMultiBufferDebugRanges for [T; N] {
+        fn to_multi_buffer_debug_ranges(
+            &self,
+            snapshot: &MultiBufferSnapshot,
+        ) -> Vec<Range<usize>> {
+            self.as_slice().to_multi_buffer_debug_ranges(snapshot)
+        }
+    }
+
+    impl<T: ToOffset, const N: usize> ToMultiBufferDebugRanges for [Range<T>; N] {
+        fn to_multi_buffer_debug_ranges(
+            &self,
+            snapshot: &MultiBufferSnapshot,
+        ) -> Vec<Range<usize>> {
+            self.as_slice().to_multi_buffer_debug_ranges(snapshot)
+        }
+    }
+
     impl<T: ToOffset> ToMultiBufferDebugRanges for [T] {
         fn to_multi_buffer_debug_ranges(
             &self,
