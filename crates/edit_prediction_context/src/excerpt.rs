@@ -61,6 +61,8 @@ impl EditPredictionExcerpt {
             return Some(EditPredictionExcerpt::new(0..buffer.len(), Vec::new()));
         }
 
+        text::debug::GlobalDebugRanges::with_locked(|debug_ranges| debug_ranges.ranges.clear());
+
         let query_offset = query_point.to_offset(buffer);
         let query_range = Point::new(query_point.row, 0).to_offset(buffer)
             ..Point::new(query_point.row + 1, 0).to_offset(buffer);
@@ -93,6 +95,10 @@ impl EditPredictionExcerpt {
         };
 
         if let Some(excerpt_ranges) = excerpt_selector.select_tree_sitter_nodes() {
+            buffer.debug(
+                &[excerpt_ranges.range.start, excerpt_ranges.range.end],
+                ("ast", excerpt_ranges.size),
+            );
             if excerpt_ranges.size >= options.min_bytes {
                 return Some(excerpt_ranges);
             }
@@ -172,9 +178,18 @@ impl<'a> ExcerptSelector<'a> {
             let excerpt_range = node_line_start(cursor.node()).to_offset(&self.buffer)
                 ..node_line_end(cursor.node()).to_offset(&self.buffer);
             if excerpt_range.contains_inclusive(&self.query_range) {
-                let excerpt = self.make_excerpt(excerpt_range);
+                let excerpt = self.make_excerpt(excerpt_range.clone());
                 if excerpt.size <= self.options.max_bytes {
+                    self.buffer.debug(
+                        &[excerpt.range.start, excerpt.range.end],
+                        ("initial", excerpt.range.len()),
+                    );
                     return Some(self.expand_to_siblings(&mut cursor, excerpt));
+                } else {
+                    self.buffer.debug(
+                        &[excerpt_range.start, excerpt_range.end],
+                        ("too_large", excerpt_range.len()),
+                    );
                 }
             } else {
                 // TODO: Should still be able to handle this case via AST nodes. For example, this
@@ -339,7 +354,7 @@ impl<'a> ExcerptSelector<'a> {
         let end_offset = end_point.to_offset(&self.buffer);
 
         // this could be expanded further since recalculated `signature_size` may be smaller, but
-        // skipping that for now for simplicity
+        // skipping that for simplicity
         let excerpt = self.make_excerpt(start_offset..end_offset);
         if excerpt.size > self.options.max_bytes {
             log::error!(
@@ -349,6 +364,10 @@ impl<'a> ExcerptSelector<'a> {
                 excerpt.size - self.options.max_bytes
             );
         }
+        self.buffer.debug(
+            &[excerpt.range.start, excerpt.range.end],
+            ("lines", excerpt.range.len()),
+        );
         return Some(excerpt);
     }
 
