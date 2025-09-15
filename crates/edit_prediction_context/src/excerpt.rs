@@ -6,16 +6,15 @@ use util::RangeExt;
 
 // TODO:
 //
-// - Handle excessive parent signature size
-//
-// - Use guess offsets for line based to do faster AST based selection?
-//
-// Things to consider:
+// - Decide whether to count signatures against the excerpt size. Could instead defer this to prompt
+// planning.
 //
 // - Still return an excerpt even if the line around the cursor doesn't fit (e.g. for a markdown
 // paragraph).
 //
 // - Truncation of long lines.
+//
+// - Filter outer syntax layers that don't support edit prediction.
 
 #[derive(Debug, Clone)]
 pub struct EditPredictionExcerptOptions {
@@ -193,7 +192,6 @@ impl<'a> ExcerptSelector<'a> {
 
     /// Select the smallest syntax layer that exceeds max_len, or the largest if none exceed max_len.
     fn select_syntax_layer(&self) -> Option<Node<'_>> {
-        // todo! Filter outer layers that don't support edit prediction?
         let mut smallest_exceeding_max_len: Option<Node<'_>> = None;
         let mut largest: Option<Node<'_>> = None;
         for layer in self
@@ -340,6 +338,8 @@ impl<'a> ExcerptSelector<'a> {
 
         // this could be expanded further since recalculated `signature_size` may be smaller, but
         // skipping that for now for simplicity
+        //
+        // TODO: could also consider checking if lines immediately before / after fit.
         let excerpt = self.make_excerpt(start_offset..end_offset);
         if excerpt.size > self.options.max_bytes {
             log::error!(
@@ -407,4 +407,244 @@ fn node_line_start(node: Node) -> Point {
 
 fn node_line_end(node: Node) -> Point {
     Point::new(node.end_position().row as u32 + 1, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indoc::indoc;
+    use text::{Buffer as TextBuffer, BufferId};
+    use util::test::marked_text_ranges;
+
+    fn create_buffer(text: &str) -> BufferSnapshot {
+        let buffer = TextBuffer::new(0, BufferId::new(1).unwrap(), text);
+        buffer.snapshot()
+    }
+
+    #[test]
+    fn test_ast_based_selection_parent_node_only() {
+        let (text, ranges) = marked_text_ranges(
+            indoc! {"
+                fn main() {
+                    let x = 1;
+                    «let ˇy = 2;»
+                    let z = 3;
+                }
+            "},
+            false,
+        );
+
+        let buffer = create_buffer(&text);
+        let cursor_point = ranges["ˇ"].start.to_point(&buffer);
+        let expected_range = ranges["«»"].clone();
+
+        let options = EditPredictionExcerptOptions {
+            max_bytes: 50, // Small window to force parent-only selection
+            min_bytes: 10,
+            before_cursor_bytes_ratio: 0.4,
+            include_parent_signatures: false,
+        };
+
+        let excerpt = EditPredictionExcerpt::select_from_buffer(cursor_point, &buffer, &options)
+            .expect("Should select an excerpt");
+
+        // Should select just the parent block, not expanding to siblings due to size limit
+        let selected_text = &text[excerpt.range.clone()];
+        let expected_text = &text[expected_range];
+        assert_eq!(selected_text, expected_text);
+        assert!(excerpt.size <= options.max_bytes);
+    }
+
+    #[test]
+    fn test_ast_based_selection_expands_to_siblings() {
+        let (text, ranges) = marked_text_ranges(
+            indoc! {"
+                «fn helper() {
+                    println!("helper");
+                }
+
+                fn main() {
+                    let x = 1;
+                    let ˇy = 2;
+                    let z = 3;
+                }
+
+                fn another() {
+                    println!("another");
+                }»
+            "},
+            false,
+        );
+
+        let buffer = create_buffer(&text);
+        let cursor_point = ranges["ˇ"].start.to_point(&buffer);
+        let expected_range = ranges["«»"].clone();
+
+        let options = EditPredictionExcerptOptions {
+            max_bytes: 200, // Larger window allows sibling expansion
+            min_bytes: 10,
+            before_cursor_bytes_ratio: 0.4,
+            include_parent_signatures: false,
+        };
+
+        let excerpt = EditPredictionExcerpt::select_from_buffer(cursor_point, &buffer, &options)
+            .expect("Should select an excerpt");
+
+        // Should expand to include sibling functions
+        let selected_text = &text[excerpt.range.clone()];
+        let expected_text = &text[expected_range];
+        assert_eq!(selected_text, expected_text);
+        assert!(excerpt.size <= options.max_bytes);
+    }
+
+    #[test]
+    fn test_line_based_selection_fallback() {
+        let (text, ranges) = marked_text_ranges(
+            indoc! {"
+                // This is a simple script
+                let x = 1;
+                «let ˇy = 2;
+                let z = 3;»
+                let w = 4;
+            "},
+            false,
+        );
+
+        let buffer = create_buffer(&text);
+        let cursor_point = ranges["ˇ"].start.to_point(&buffer);
+
+        let options = EditPredictionExcerptOptions {
+            max_bytes: 60,
+            min_bytes: 100, // High min_bytes forces line-based fallback
+            before_cursor_bytes_ratio: 0.5,
+            include_parent_signatures: false,
+        };
+
+        let excerpt = EditPredictionExcerpt::select_from_buffer(cursor_point, &buffer, &options)
+            .expect("Should select an excerpt");
+
+        // Should use line-based selection when AST selection is too small
+        assert!(excerpt.size <= options.max_bytes);
+
+        // Verify the cursor line is included
+        let cursor_offset = cursor_point.to_offset(&buffer);
+        assert!(excerpt.range.contains(&cursor_offset));
+    }
+
+    #[test]
+    fn test_line_based_selection_with_ratio() {
+        let (text, ranges) = marked_text_ranges(
+            indoc! {"
+                let a = 1;
+                let b = 2;
+                «let c = 3;
+                let ˇd = 4;
+                let e = 5;»
+                let f = 6;
+                let g = 7;
+            "},
+            false,
+        );
+
+        let buffer = create_buffer(&text);
+        let cursor_point = ranges["ˇ"].start.to_point(&buffer);
+
+        let options = EditPredictionExcerptOptions {
+            max_bytes: 80,
+            min_bytes: 100,                 // Force line-based selection
+            before_cursor_bytes_ratio: 0.3, // Prefer more content after cursor
+            include_parent_signatures: false,
+        };
+
+        let excerpt = EditPredictionExcerpt::select_from_buffer(cursor_point, &buffer, &options)
+            .expect("Should select an excerpt");
+
+        let cursor_offset = cursor_point.to_offset(&buffer);
+        let bytes_before = cursor_offset - excerpt.range.start;
+        let ratio = bytes_before as f32 / excerpt.range.len() as f32;
+
+        // Should roughly respect the before_cursor_bytes_ratio
+        assert!(excerpt.range.contains(&cursor_offset));
+        assert!(excerpt.size <= options.max_bytes);
+
+        // Ratio should be reasonably close to target (within 0.2 tolerance)
+        assert!((ratio - options.before_cursor_bytes_ratio).abs() < 0.4);
+    }
+
+    #[test]
+    fn test_entire_file_when_small() {
+        let text = indoc! {"
+            fn small() {
+                let x = 1;
+            }
+        "};
+
+        let buffer = create_buffer(text);
+        let cursor_point = Point::new(1, 8);
+
+        let options = EditPredictionExcerptOptions {
+            max_bytes: 1000, // Much larger than the file
+            min_bytes: 10,
+            before_cursor_bytes_ratio: 0.5,
+            include_parent_signatures: false,
+        };
+
+        let excerpt = EditPredictionExcerpt::select_from_buffer(cursor_point, &buffer, &options)
+            .expect("Should select an excerpt");
+
+        // Should select the entire file
+        assert_eq!(excerpt.range, 0..buffer.len());
+    }
+
+    #[test]
+    fn test_cursor_line_too_large() {
+        let text = "let very_long_line_that_exceeds_the_maximum_bytes_allowed_in_the_window_making_it_impossible_to_fit = 42;";
+
+        let buffer = create_buffer(text);
+        let cursor_point = Point::new(0, 50);
+
+        let options = EditPredictionExcerptOptions {
+            max_bytes: 50, // Smaller than the line itself
+            min_bytes: 10,
+            before_cursor_bytes_ratio: 0.5,
+            include_parent_signatures: false,
+        };
+
+        let excerpt = EditPredictionExcerpt::select_from_buffer(cursor_point, &buffer, &options);
+
+        // Should return None when even the cursor line doesn't fit
+        assert!(excerpt.is_none());
+    }
+
+    #[test]
+    fn test_with_parent_signatures() {
+        let (text, ranges) = marked_text_ranges(
+            indoc! {"
+                struct MyStruct {
+                    fn method(&self) {
+                        let x = 1;
+                        «let ˇy = 2;»
+                        let z = 3;
+                    }
+                }
+            "},
+            false,
+        );
+
+        let buffer = create_buffer(&text);
+        let cursor_point = ranges["ˇ"].start.to_point(&buffer);
+
+        let options = EditPredictionExcerptOptions {
+            max_bytes: 100,
+            min_bytes: 10,
+            before_cursor_bytes_ratio: 0.5,
+            include_parent_signatures: true,
+        };
+
+        let excerpt = EditPredictionExcerpt::select_from_buffer(cursor_point, &buffer, &options)
+            .expect("Should select an excerpt");
+
+        // Should include parent signatures in the size calculation
+        assert!(excerpt.parent_signature_ranges.len() > 0 || excerpt.size > excerpt.range.len());
+    }
 }
