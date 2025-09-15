@@ -24,7 +24,7 @@ pub fn excerpt_for_cursor_position(
         &EditPredictionExcerptOptions {
             max_bytes: editable_region_byte_limit,
             min_bytes: editable_region_byte_limit / 2,
-            before_cursor_bytes_ratio: 0.75,
+            before_cursor_bytes_ratio: 0.66,
             include_parent_signatures: false,
         },
     )?

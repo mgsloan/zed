@@ -3417,6 +3417,18 @@ pub mod debug {
         }
     }
 
+    impl<T: ToOffset, const N: usize> ToDebugRanges for [T; N] {
+        fn to_debug_ranges(&self, snapshot: &BufferSnapshot) -> Vec<Range<usize>> {
+            self.as_slice().to_debug_ranges(snapshot)
+        }
+    }
+
+    impl<T: ToOffset, const N: usize> ToDebugRanges for [Range<T>; N] {
+        fn to_debug_ranges(&self, snapshot: &BufferSnapshot) -> Vec<Range<usize>> {
+            self.as_slice().to_debug_ranges(snapshot)
+        }
+    }
+
     impl<T: ToOffset> ToDebugRanges for [T] {
         fn to_debug_ranges(&self, snapshot: &BufferSnapshot) -> Vec<Range<usize>> {
             self.iter()
