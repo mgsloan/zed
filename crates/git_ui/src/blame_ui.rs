@@ -209,9 +209,7 @@ impl BlameRenderer for GitBlameRenderer {
         );
         let markdown_style = {
             let mut style = hover_markdown_style(window, cx);
-            if let Some(code_block) = &style.code_block.text {
-                style.base_text_style.refine(code_block);
-            }
+            style.base_text_style.refine(&style.code_block.text);
             style
         };
 

@@ -607,29 +607,23 @@ static COLOR_METHODS: &[ColorMethod] = &[
     ColorMethod {
         name: "text_color",
         set: |style, color| style.text_color(color),
-        get: |style| style.text.as_ref().and_then(|text_style| text_style.color),
+        get: |style| style.text.color,
     },
     ColorMethod {
         name: "text_decoration_color",
         set: |style, color| style.text_decoration_color(color),
         get: |style| {
-            style.text.as_ref().and_then(|text_style| {
-                text_style
-                    .underline
-                    .as_ref()
-                    .and_then(|underline| underline.color)
-            })
+            style
+                .text
+                .underline
+                .as_ref()
+                .and_then(|underline| underline.color)
         },
     },
     ColorMethod {
         name: "text_bg",
         set: |style, color| style.text_bg(color),
-        get: |style| {
-            style
-                .text
-                .as_ref()
-                .and_then(|text_style| text_style.background_color)
-        },
+        get: |style| style.text.background_color,
     },
     ColorMethod {
         name: "bg",
