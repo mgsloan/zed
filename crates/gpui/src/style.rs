@@ -252,6 +252,7 @@ pub struct Style {
     pub box_shadow: Vec<BoxShadow>,
 
     /// The text style of this element
+    #[refineable]
     pub text: TextStyleRefinement,
 
     /// The mouse cursor style shown when the mouse pointer is over an element.
@@ -818,7 +819,16 @@ pub struct StrikethroughStyle {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum Fill {
     /// A solid color fill.
-    Color(Background),
+    Solid(Hsla),
+    LinearGradient {
+        angle: f32,
+        colors: [LinearColorStop; 2],
+    },
+    PatternSlash {
+        color: Hsla,
+        width: f32,
+        interval: f32,
+    },
 }
 
 impl Fill {
