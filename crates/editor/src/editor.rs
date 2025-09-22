@@ -15627,6 +15627,25 @@ impl Editor {
         }
     }
 
+    pub fn goto_next_edit_region(
+        &mut self,
+        _: &GoToNextEditRegion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // TODO: What to do about non singleton?
+        let Some(buffer) = self.buffer.read(cx).as_singleton() else { return; };
+        
+    }
+
+    pub fn goto_previous_edit_region(
+        &mut self,
+        _: &GoToPreviousEditRegion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+    }
+
     pub fn expand_excerpts(
         &mut self,
         action: &ExpandExcerpts,

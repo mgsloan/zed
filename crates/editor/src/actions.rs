@@ -492,10 +492,14 @@ actions!(
         GoToImplementationSplit,
         /// Goes to the next change in the file.
         GoToNextChange,
+        /// Goes to the next edited region.
+        GoToNextEditRegion,
         /// Goes to the parent module of the current file.
         GoToParentModule,
         /// Goes to the previous change in the file.
         GoToPreviousChange,
+        /// Goes to the previous edited region.
+        GoToPreviousEditRegion,
         /// Goes to the type definition of the symbol at cursor.
         GoToTypeDefinition,
         /// Goes to type definition in a split pane.
