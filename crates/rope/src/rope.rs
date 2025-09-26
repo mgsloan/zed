@@ -8,7 +8,9 @@ use chunk::Chunk;
 use rayon::iter::{IntoParallelIterator, ParallelIterator as _};
 use smallvec::SmallVec;
 use std::{
-    cmp, fmt, io, mem,
+    borrow::Cow,
+    cmp::{self},
+    fmt, io, mem,
     ops::{self, AddAssign, Range},
     str,
 };
@@ -913,6 +915,15 @@ impl<'a> Chunks<'a> {
         }
     }
 
+    pub fn cow_lines(self) -> CowLines<'a> {
+        let reversed = self.reversed;
+        CowLines {
+            chunks: self,
+            done: false,
+            reversed,
+        }
+    }
+
     pub fn equals_str(&self, other: &str) -> bool {
         let chunk = self.clone();
         if chunk.reversed {
@@ -1133,6 +1144,66 @@ impl<'a> Lines<'a> {
     pub fn seek(&mut self, offset: usize) {
         self.chunks.seek(offset);
         self.current_line.clear();
+        self.done = false;
+    }
+
+    pub fn offset(&self) -> usize {
+        self.chunks.offset()
+    }
+}
+
+pub struct CowLines<'a> {
+    chunks: Chunks<'a>,
+    done: bool,
+    reversed: bool,
+}
+
+impl<'a> Iterator for CowLines<'a> {
+    type Item = Cow<'a, str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        let mut current_line = String::new();
+
+        while let Some(chunk) = self.chunks.chunks.item() {
+            if self.reversed {
+                todo!()
+            } else {
+                let offset_in_chunk = self.chunks.offset - *self.chunks.chunks.start();
+                let newline_ix = chunk.as_slice().find_newline(offset_in_chunk);
+                let line_done = newline_ix.is_some();
+                let chunk_line = if let Some(newline_ix) = newline_ix {
+                    &chunk.text[..newline_ix]
+                } else {
+                    &chunk.text
+                };
+                if line_done {
+                    self.chunks
+                        .seek(self.offset() + chunk_line.len() + "\n".len());
+                    if current_line.is_empty() {
+                        return Some(chunk_line.into());
+                    }
+                }
+                current_line.push_str(chunk_line);
+                if line_done {
+                    return Some(current_line.into());
+                }
+            }
+
+            self.chunks.next();
+        }
+
+        self.done = true;
+        Some(current_line.into())
+    }
+}
+
+impl CowLines<'_> {
+    pub fn seek(&mut self, offset: usize) {
+        self.chunks.seek(offset);
         self.done = false;
     }
 

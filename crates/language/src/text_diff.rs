@@ -5,7 +5,8 @@ use imara_diff::{
     intern::{InternedInput, Token},
     sources::lines_with_terminator,
 };
-use std::{iter, ops::Range, sync::Arc};
+use std::{borrow::Cow, iter, ops::Range, sync::Arc};
+use text::Rope;
 
 const MAX_WORD_DIFF_LEN: usize = 512;
 const MAX_WORD_DIFF_LINE_COUNT: usize = 8;
@@ -13,6 +14,15 @@ const MAX_WORD_DIFF_LINE_COUNT: usize = 8;
 /// Computes a diff between two strings, returning a unified diff string.
 pub fn unified_diff(old_text: &str, new_text: &str) -> String {
     let input = InternedInput::new(old_text, new_text);
+    diff(
+        Algorithm::Histogram,
+        &input,
+        UnifiedDiffBuilder::new(&input),
+    )
+}
+
+pub fn unified_rope_diff(before: &Rope, after: &Rope) -> String {
+    let input = rope_lines_interned_input(before, after);
     diff(
         Algorithm::Histogram,
         &input,
@@ -179,6 +189,44 @@ fn diff_internal(
         },
     );
 }
+
+fn rope_lines_interned_input<'a>(before: &'a Rope, after: &'a Rope) -> InternedInput<Cow<'a, str>> {
+    let tokens_before = (before.summary().lines.row + 1) as usize;
+    let tokens_after = (after.summary().lines.row + 1) as usize;
+    let mut res = InternedInput {
+        before: Vec::with_capacity(tokens_before),
+        after: Vec::with_capacity(tokens_after),
+        interner: imara_diff::intern::Interner::new(tokens_before + tokens_after),
+    };
+    add_rope_line_tokens(before, &mut res.interner, &mut res.before);
+    add_rope_line_tokens(after, &mut res.interner, &mut res.after);
+    res
+}
+
+fn add_rope_line_tokens<'a>(
+    rope: &'a Rope,
+    interner: &mut imara_diff::intern::Interner<Cow<'a, str>>,
+    tokens: &mut Vec<Token>,
+) {
+    // todo! include terminators
+    let mut lines = rope.chunks().cow_lines();
+    while let Some(line) = lines.next() {
+        // todo! when lots of cache hits are anticipated could potentially do a streaming hash of line
+        //
+        // What about only hashing N chars of line?
+        tokens.push(interner.intern(line))
+    }
+}
+
+/*
+pub fn rope_line_diff<S: imara_diff::Sink, T>(
+    algorithm: Algorithm,
+    sink: S,
+) -> S::Out {
+
+    imara_diff::diff_with_tokens(algorithm, before, after, sink)
+}
+*/
 
 fn tokenize(text: &str, language_scope: Option<LanguageScope>) -> impl Iterator<Item = &str> {
     let classifier =
