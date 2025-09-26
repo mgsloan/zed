@@ -513,6 +513,21 @@ impl<'a> ChunkSlice<'a> {
         row_start..row_start + row_len as usize
     }
 
+    /// Find the first newline character on or after an offset. Offset must be < len.
+    #[inline(always)]
+    pub fn find_newline(&self, offset: usize) -> Option<usize> {
+        debug_assert!(offset < self.text.len());
+        find_set_bit(self.newlines, offset as u32).map(|index| index as usize)
+    }
+
+    /// Find the last newline character before an offset. Offset must be > 0 and <= len.
+    #[inline(always)]
+    pub fn rfind_newline(&self, offset: usize) -> Option<usize> {
+        debug_assert!(offset != 0);
+        debug_assert!(offset <= self.text.len());
+        rfind_set_bit(self.newlines, offset as u32).map(|index| index as usize)
+    }
+
     #[inline(always)]
     pub fn tabs(&self) -> Tabs {
         Tabs {
@@ -607,6 +622,27 @@ fn nth_set_bit_u64(v: u64, mut n: u64) -> u64 {
     s -= (t.wrapping_sub(n) & 256) >> 8;
 
     65 - s - 1
+}
+
+/// Finds the first set bit on or after a bit index. Returns invalid results if i >= 128.
+#[inline(always)]
+fn find_set_bit(v: u128, i: u32) -> Option<u32> {
+    let shifted = v.wrapping_shr(i as u32);
+    if shifted == 0 {
+        None
+    } else {
+        Some(i + shifted.trailing_zeros())
+    }
+}
+
+/// Finds the last set bit before a bit index. Returns invalid results if i == 0 or i > 128.
+fn rfind_set_bit(v: u128, i: u32) -> Option<u32> {
+    let shifted = v.wrapping_shl(u128::BITS - i);
+    if shifted == 0 {
+        None
+    } else {
+        Some(i - shifted.leading_zeros() - 1)
+    }
 }
 
 #[cfg(test)]
@@ -946,5 +982,100 @@ mod tests {
 
         assert_eq!((max_row, max_chars as u32), (longest_row, longest_chars));
         assert_eq!(chunk.tabs().collect::<Vec<_>>(), expected_tab_positions);
+    }
+
+    #[gpui::test]
+    fn test_find_newline() {
+        let chunk = Chunk::new("01\n34\n67");
+        let slice = chunk.as_slice();
+
+        assert_eq!(slice.find_newline(0), Some(2));
+        assert_eq!(slice.find_newline(1), Some(2));
+        assert_eq!(slice.find_newline(2), Some(2));
+        assert_eq!(slice.find_newline(3), Some(5));
+        assert_eq!(slice.find_newline(4), Some(5));
+        assert_eq!(slice.find_newline(6), None);
+
+        let chunk = Chunk::new("0123");
+        let slice = chunk.as_slice();
+        assert_eq!(slice.find_newline(0), None);
+        assert_eq!(slice.find_newline(1), None);
+        assert_eq!(slice.find_newline(2), None);
+        assert_eq!(slice.find_newline(3), None);
+    }
+
+    #[gpui::test]
+    fn test_rfind_newline() {
+        let chunk = Chunk::new("01\n34\n67");
+        let slice = chunk.as_slice();
+
+        assert_eq!(slice.rfind_newline(1), None);
+        assert_eq!(slice.rfind_newline(2), None);
+        assert_eq!(slice.rfind_newline(3), Some(2));
+        assert_eq!(slice.rfind_newline(4), Some(2));
+        assert_eq!(slice.rfind_newline(5), Some(2));
+        assert_eq!(slice.rfind_newline(6), Some(5));
+        assert_eq!(slice.rfind_newline(7), Some(5));
+        assert_eq!(slice.rfind_newline(8), Some(5));
+
+        let chunk = Chunk::new("0123");
+        let slice = chunk.as_slice();
+        assert_eq!(slice.rfind_newline(1), None);
+        assert_eq!(slice.rfind_newline(2), None);
+        assert_eq!(slice.rfind_newline(3), None);
+        assert_eq!(slice.rfind_newline(4), None);
+    }
+
+    #[gpui::test]
+    fn test_find_set_bit() {
+        assert_eq!(find_set_bit(0, 0), None);
+        assert_eq!(find_set_bit(0, 1), None);
+        assert_eq!(find_set_bit(0, 126), None);
+        assert_eq!(find_set_bit(0, 127), None);
+        assert_eq!(find_set_bit(2, 0), Some(1));
+        assert_eq!(find_set_bit(2, 1), Some(1));
+        assert_eq!(find_set_bit(2, 2), None);
+        assert_eq!(find_set_bit(2, 126), None);
+        assert_eq!(find_set_bit(2, 127), None);
+        assert_eq!(find_set_bit(u128::MAX, 0), Some(0));
+        assert_eq!(find_set_bit(u128::MAX, 1), Some(1));
+        assert_eq!(find_set_bit(u128::MAX, 126), Some(126));
+        assert_eq!(find_set_bit(u128::MAX, 127), Some(127));
+        assert_eq!(find_set_bit(u128::MAX ^ 1, 0), Some(1));
+        assert_eq!(find_set_bit(u128::MAX ^ 3, 0), Some(2));
+        assert_eq!(find_set_bit(u128::MAX ^ 3, 1), Some(2));
+        assert_eq!(find_set_bit(1 << 127, 0), Some(127));
+        assert_eq!(find_set_bit(1 << 127, 1), Some(127));
+        assert_eq!(find_set_bit(1 << 127, 127), Some(127));
+        assert_eq!(find_set_bit(1 << 126, 0), Some(126));
+        assert_eq!(find_set_bit(1 << 126, 1), Some(126));
+        assert_eq!(find_set_bit(1 << 126, 126), Some(126));
+        assert_eq!(find_set_bit(1 << 126, 127), None);
+    }
+
+    #[gpui::test]
+    fn test_rfind_set_bit() {
+        assert_eq!(rfind_set_bit(0, 1), None);
+        assert_eq!(rfind_set_bit(0, 2), None);
+        assert_eq!(rfind_set_bit(0, 127), None);
+        assert_eq!(rfind_set_bit(0, 128), None);
+        assert_eq!(rfind_set_bit(2, 1), None);
+        assert_eq!(rfind_set_bit(2, 2), Some(1));
+        assert_eq!(rfind_set_bit(2, 126), Some(1));
+        assert_eq!(rfind_set_bit(2, 127), Some(1));
+        assert_eq!(rfind_set_bit(u128::MAX, 1), Some(0));
+        assert_eq!(rfind_set_bit(u128::MAX, 2), Some(1));
+        assert_eq!(rfind_set_bit(u128::MAX, 127), Some(126));
+        assert_eq!(rfind_set_bit(u128::MAX, 128), Some(127));
+        assert_eq!(rfind_set_bit(u128::MAX ^ 1, 1), None);
+        assert_eq!(rfind_set_bit(u128::MAX ^ 1, 2), Some(1));
+        assert_eq!(rfind_set_bit(u128::MAX ^ 3, 1), None);
+        assert_eq!(rfind_set_bit(u128::MAX ^ 3, 2), None);
+        assert_eq!(rfind_set_bit(u128::MAX ^ 3, 3), Some(2));
+        assert_eq!(rfind_set_bit(1 << 127, 128), Some(127));
+        assert_eq!(rfind_set_bit(1 << 127, 127), None);
+        assert_eq!(rfind_set_bit(1 << 126, 128), Some(126));
+        assert_eq!(rfind_set_bit(1 << 126, 127), Some(126));
+        assert_eq!(rfind_set_bit(1 << 126, 126), None);
     }
 }

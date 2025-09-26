@@ -1092,8 +1092,8 @@ impl<'a> Lines<'a> {
             if self.reversed {
                 let mut chunk_lines = chunk_lines.rev().peekable();
                 if let Some(chunk_line) = chunk_lines.next() {
-                    let done = chunk_lines.peek().is_some();
-                    if done {
+                    let line_done = chunk_lines.peek().is_some();
+                    if line_done {
                         self.chunks
                             .seek(self.chunks.offset() - chunk_line.len() - "\n".len());
                         if self.current_line.is_empty() {
@@ -1101,15 +1101,15 @@ impl<'a> Lines<'a> {
                         }
                     }
                     self.current_line.insert_str(0, chunk_line);
-                    if done {
+                    if line_done {
                         return Some(&self.current_line);
                     }
                 }
             } else {
                 let mut chunk_lines = chunk_lines.peekable();
                 if let Some(chunk_line) = chunk_lines.next() {
-                    let done = chunk_lines.peek().is_some();
-                    if done {
+                    let line_done = chunk_lines.peek().is_some();
+                    if line_done {
                         self.chunks
                             .seek(self.chunks.offset() + chunk_line.len() + "\n".len());
                         if self.current_line.is_empty() {
@@ -1117,7 +1117,7 @@ impl<'a> Lines<'a> {
                         }
                     }
                     self.current_line.push_str(chunk_line);
-                    if done {
+                    if line_done {
                         return Some(&self.current_line);
                     }
                 }
