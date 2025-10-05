@@ -6,7 +6,6 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 use std::{borrow::Cow, ops::Range};
-use text::OffsetRangeExt as _;
 use util::RangeExt;
 use util::paths::PathStyle;
 use util::rel_path::RelPath;
@@ -189,7 +188,7 @@ impl Imports {
             let mut new_import_range = None;
             let mut alias_range = None;
             let mut modules = Vec::new();
-            let mut content: Option<(Range<usize>, NodeKind)> = None;
+            let mut contents: Vec<(Range<usize>, NodeKind)> = Vec::new();
             for capture in query_match.captures {
                 let capture_range = capture.node.byte_range();
 
@@ -202,31 +201,12 @@ impl Imports {
                 } else if Some(capture.index) == *alias_ix {
                     alias_range = Some(capture_range);
                 } else {
-                    let mut found_content = None;
                     if Some(capture.index) == *name_ix {
-                        found_content = Some((capture_range, NodeKind::Name));
+                        contents.push((capture_range, NodeKind::Name));
                     } else if Some(capture.index) == *list_ix {
-                        found_content = Some((capture_range, NodeKind::List));
+                        contents.push((capture_range, NodeKind::List));
                     } else if Some(capture.index) == *wildcard_ix {
-                        found_content = Some((capture_range, NodeKind::Wildcard));
-                    }
-                    if let Some((found_content_range, found_kind)) = found_content {
-                        if let Some((_, old_kind)) = content {
-                            let point = found_content_range.to_point(snapshot);
-                            log::warn!(
-                                "bug in {} imports query: unexpected multiple captures of {} and {} ({}:{}:{})",
-                                query_match.language.name(),
-                                old_kind.capture_name(),
-                                found_kind.capture_name(),
-                                snapshot
-                                    .file()
-                                    .map(|p| p.path().display(PathStyle::Posix))
-                                    .unwrap_or_default(),
-                                point.start.row + 1,
-                                point.start.column + 1
-                            );
-                        }
-                        content = Some((found_content_range, found_kind));
+                        contents.push((capture_range, NodeKind::Wildcard));
                     }
                 }
             }
@@ -247,22 +227,20 @@ impl Imports {
                 import_range = Some(new_import_range.clone());
             }
 
-            if let Some((content, kind)) = content {
-                if import_range
-                    .as_ref()
-                    .is_some_and(|import_range| import_range.contains_inclusive(&content))
-                {
+            if !contents.is_empty() {
+                if import_range.as_ref().is_some_and(|import_range| {
+                    contents
+                        .iter()
+                        .any(|(range, _)| import_range.contains_inclusive(&range))
+                }) {
                     detached_nodes.push(DetachedNode {
                         modules,
-                        content: content.clone(),
+                        contents: contents.clone(),
                         alias: alias_range.unwrap_or(0..0),
                         language_id,
-                        kind,
                     });
                 } else {
-                    log::trace!(
-                        "filtered out match not inside import range: {kind:?} at {content:?}"
-                    );
+                    log::trace!("filtered out matches not inside import range: {contents:?}");
                 }
             }
 
@@ -479,10 +457,9 @@ fn range_text(snapshot: &BufferSnapshot, range: &Range<usize>) -> Arc<str> {
 #[derive(Debug)]
 struct DetachedNode {
     modules: Vec<ModuleRange>,
-    content: Range<usize>,
+    contents: Vec<(Range<usize>, NodeKind)>,
     alias: Range<usize>,
     language_id: LanguageId,
-    kind: NodeKind,
 }
 
 // todo! rename
@@ -539,6 +516,18 @@ impl ImportTree {
             kind: NodeKind::Name,
         }
     }
+
+    fn from_content_range(content: &Range<usize>, kind: NodeKind, language_id: LanguageId) -> Self {
+        ImportTree {
+            module: ModuleRange::Namespace(0..0),
+            module_children: Vec::new(),
+            content: content.clone(),
+            content_children: Vec::new(),
+            alias: 0..0,
+            language_id,
+            kind: NodeKind::Name,
+        }
+    }
 }
 
 impl From<&DetachedNode> for ImportTree {
@@ -567,14 +556,41 @@ impl From<&DetachedNode> for ImportTree {
             }
         }
 
+        let content;
+        let kind;
+        let content_children;
+        match value.contents.len() {
+            0 => {
+                // todo!
+                panic!("Empty contents");
+            }
+            1 => {
+                content = value.contents[0].0.clone();
+                kind = value.contents[0].1;
+                content_children = Vec::new();
+            }
+            _ => {
+                content =
+                    value.contents.first().unwrap().0.start..value.contents.last().unwrap().0.end;
+                kind = NodeKind::List;
+                content_children = value
+                    .contents
+                    .iter()
+                    .map(|(range, kind)| {
+                        ImportTree::from_content_range(range, *kind, value.language_id)
+                    })
+                    .collect();
+            }
+        }
+
         ImportTree {
             module,
             module_children,
-            content: value.content.clone(),
-            content_children: Vec::new(),
+            content,
+            content_children,
             alias: value.alias.clone(),
             language_id: value.language_id,
-            kind: value.kind,
+            kind,
         }
     }
 }
