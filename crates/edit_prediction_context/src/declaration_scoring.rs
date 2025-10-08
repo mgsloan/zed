@@ -2,6 +2,7 @@ use cloud_llm_client::predict_edits_v3::DeclarationScoreComponents;
 use collections::HashMap;
 use language::BufferSnapshot;
 use ordered_float::OrderedFloat;
+use project::ProjectEntryId;
 use serde::Serialize;
 use std::{cmp::Reverse, ops::Range, path::Path, sync::Arc};
 use strum::EnumIter;
@@ -133,129 +134,153 @@ pub fn scored_declarations(
         }
     }
 
-    let mut declarations = identifier_to_references
-        .into_iter()
-        .flat_map(|(identifier, references)| {
-            let mut import_occurrences = Vec::new();
-            let mut import_paths = Vec::new();
-            let mut found_external_identifier: Option<&Identifier> = None;
+    struct IdentifierDeclarations<'a> {
+        identifier: Identifier,
+        references: Vec<Reference>,
+        import_occurrences: Vec<Occurrences>,
+        checked_declarations: Vec<CheckedDeclaration<'a>>,
+    }
 
-            if let Some(imports) = imports.identifier_to_imports.get(&identifier) {
-                // only use alias when it's the only import, could be generalized if some language
-                // has overlapping aliases
-                //
-                // TODO: when an aliased declaration is included in the prompt, should include the
-                // aliasing in the prompt.
-                //
-                // TODO: For SourceFuzzy consider having componentwise comparison that pays
-                // attention to ordering.
-                if let [
-                    Import::Alias {
-                        module,
-                        external_identifier,
-                    },
-                ] = imports.as_slice()
-                {
-                    match module {
-                        Module::Namespace(namespace) => {
-                            import_occurrences.push(namespace.occurrences())
-                        }
-                        Module::SourceExact(path) => import_paths.push(path),
-                        Module::SourceFuzzy(path) => {
-                            import_occurrences.push(Occurrences::from_path(&path))
-                        }
+    let mut identifier_declarations = Vec::new();
+    let mut project_entry_to_outline_ranges: HashMap<ProjectEntryId, Vec<Range<usize>>> =
+        HashMap::default();
+    for (identifier, references) in identifier_to_references {
+        let mut import_occurrences = Vec::new();
+        let mut import_paths = Vec::new();
+        let mut found_external_identifier: Option<&Identifier> = None;
+
+        if let Some(imports) = imports.identifier_to_imports.get(&identifier) {
+            // only use alias when it's the only import, could be generalized if some language
+            // has overlapping aliases
+            //
+            // TODO: when an aliased declaration is included in the prompt, should include the
+            // aliasing in the prompt.
+            //
+            // TODO: For SourceFuzzy consider having componentwise comparison that pays
+            // attention to ordering.
+            if let [
+                Import::Alias {
+                    module,
+                    external_identifier,
+                },
+            ] = imports.as_slice()
+            {
+                match module {
+                    Module::Namespace(namespace) => {
+                        import_occurrences.push(namespace.occurrences())
                     }
-                    found_external_identifier = Some(&external_identifier);
-                } else {
-                    for import in imports {
-                        match import {
-                            Import::Direct { module } => match module {
-                                Module::Namespace(namespace) => {
-                                    import_occurrences.push(namespace.occurrences())
-                                }
-                                Module::SourceExact(path) => import_paths.push(path),
-                                Module::SourceFuzzy(path) => {
-                                    import_occurrences.push(Occurrences::from_path(&path))
-                                }
-                            },
-                            Import::Alias { .. } => {}
-                        }
+                    Module::SourceExact(path) => import_paths.push(path),
+                    Module::SourceFuzzy(path) => {
+                        import_occurrences.push(Occurrences::from_path(&path))
                     }
                 }
-            }
-
-            let identifier_to_lookup = found_external_identifier.unwrap_or(&identifier);
-            // TODO: update this to be able to return more declarations? Especially if there is the
-            // ability to quickly filter a large list (based on imports)
-            let declarations = index
-                .declarations_for_identifier::<MAX_IDENTIFIER_DECLARATION_COUNT>(
-                    &identifier_to_lookup,
-                );
-            let declaration_count = declarations.len();
-
-            if declaration_count == 0 {
-                return Vec::new();
-            }
-
-            // TODO: option to filter out other candidates when same file / import match
-            let mut checked_declarations = Vec::new();
-            for (declaration_id, declaration) in declarations {
-                match declaration {
-                    Declaration::Buffer {
-                        buffer_id,
-                        declaration: buffer_declaration,
-                        ..
-                    } => {
-                        if buffer_id == &current_buffer.remote_id() {
-                            let already_included_in_prompt =
-                                range_intersection(&buffer_declaration.item_range, &excerpt.range)
-                                    .is_some()
-                                    || excerpt.parent_declarations.iter().any(
-                                        |(excerpt_parent, _)| excerpt_parent == &declaration_id,
-                                    );
-                            if !options.omit_excerpt_overlaps || !already_included_in_prompt {
-                                let declaration_line = buffer_declaration
-                                    .item_range
-                                    .start
-                                    .to_point(current_buffer)
-                                    .row;
-                                let declaration_line_distance = (cursor_point.row as i32
-                                    - declaration_line as i32)
-                                    .unsigned_abs();
-                                checked_declarations.push(CheckedDeclaration {
-                                    declaration,
-                                    same_file_line_distance: Some(declaration_line_distance),
-                                    path_import_match_count: 0,
-                                    wildcard_path_import_match_count: 0,
-                                });
+                found_external_identifier = Some(&external_identifier);
+            } else {
+                for import in imports {
+                    match import {
+                        Import::Direct { module } => match module {
+                            Module::Namespace(namespace) => {
+                                import_occurrences.push(namespace.occurrences())
                             }
-                            continue;
-                        } else {
-                        }
+                            Module::SourceExact(path) => import_paths.push(path),
+                            Module::SourceFuzzy(path) => {
+                                import_occurrences.push(Occurrences::from_path(&path))
+                            }
+                        },
+                        Import::Alias { .. } => {}
                     }
-                    Declaration::File { .. } => {}
                 }
-                let declaration_path = declaration.cached_path();
-                let path_import_match_count = import_paths
-                    .iter()
-                    .filter(|import_path| {
-                        declaration_path_matches_import(&declaration_path, import_path)
-                    })
-                    .count();
-                let wildcard_path_import_match_count = wildcard_import_paths
-                    .iter()
-                    .filter(|import_path| {
-                        declaration_path_matches_import(&declaration_path, import_path)
-                    })
-                    .count();
-                checked_declarations.push(CheckedDeclaration {
-                    declaration,
-                    same_file_line_distance: None,
-                    path_import_match_count,
-                    wildcard_path_import_match_count,
-                });
             }
+        }
 
+        let identifier_to_lookup = found_external_identifier.unwrap_or(&identifier);
+        // TODO: update this to be able to return more declarations? Especially if there is the
+        // ability to quickly filter a large list (based on imports)
+        let declarations = index
+            .declarations_for_identifier::<MAX_IDENTIFIER_DECLARATION_COUNT>(&identifier_to_lookup);
+        let declaration_count = declarations.len();
+
+        if declaration_count == 0 {
+            return Vec::new();
+        }
+
+        // TODO: option to filter out other candidates when same file / import match
+        let mut checked_declarations = Vec::new();
+        for (declaration_id, declaration) in declarations {
+            match declaration {
+                Declaration::Buffer {
+                    buffer_id,
+                    declaration: buffer_declaration,
+                    ..
+                } => {
+                    if buffer_id == &current_buffer.remote_id() {
+                        let already_included_in_prompt =
+                            range_intersection(&buffer_declaration.item_range, &excerpt.range)
+                                .is_some()
+                                || excerpt
+                                    .parent_declarations
+                                    .iter()
+                                    .any(|(excerpt_parent, _)| excerpt_parent == &declaration_id);
+                        if !options.omit_excerpt_overlaps || !already_included_in_prompt {
+                            let declaration_line = buffer_declaration
+                                .item_range
+                                .start
+                                .to_point(current_buffer)
+                                .row;
+                            let declaration_line_distance =
+                                (cursor_point.row as i32 - declaration_line as i32).unsigned_abs();
+                            checked_declarations.push(CheckedDeclaration {
+                                declaration,
+                                same_file_line_distance: Some(declaration_line_distance),
+                                path_import_match_count: 0,
+                                wildcard_path_import_match_count: 0,
+                            });
+                            project_entry_to_outline_ranges
+                                .entry(declaration.project_entry_id())
+                                .or_default()
+                                .push(declaration.item_range());
+                        }
+                        continue;
+                    }
+                }
+                Declaration::File { .. } => {}
+            }
+            let declaration_path = declaration.cached_path();
+            let path_import_match_count = import_paths
+                .iter()
+                .filter(|import_path| {
+                    declaration_path_matches_import(&declaration_path, import_path)
+                })
+                .count();
+            let wildcard_path_import_match_count = wildcard_import_paths
+                .iter()
+                .filter(|import_path| {
+                    declaration_path_matches_import(&declaration_path, import_path)
+                })
+                .count();
+            checked_declarations.push(CheckedDeclaration {
+                declaration,
+                same_file_line_distance: None,
+                path_import_match_count,
+                wildcard_path_import_match_count,
+            });
+            project_entry_to_outline_ranges
+                .entry(declaration.project_entry_id())
+                .or_default()
+                .push(declaration.item_range());
+        }
+
+        identifier_declarations.push(IdentifierDeclarations {
+            identifier,
+            references,
+            import_occurrences,
+            checked_declarations,
+        });
+    }
+
+    let mut declarations = identifier_declarations
+        .into_iter()
+        .flat_map(|(identifier, references, checked_declarations)| {
             let mut max_import_similarity = 0.0;
             let mut max_wildcard_import_similarity = 0.0;
 
