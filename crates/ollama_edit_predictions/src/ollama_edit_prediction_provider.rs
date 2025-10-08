@@ -62,18 +62,14 @@ pub struct OllamaEditPredictionProvider {
     file_extension: Option<String>,
     current_completion: Option<OllamaCompletion>,
     pending_refresh: Option<Task<Result<()>>>,
-    _service_subscription: Option<Subscription>,
 }
 
 impl OllamaEditPredictionProvider {
-    pub fn new(model: String, cx: &mut Context<Self>) -> Self {
-        let subscription = if let Some(provider) = OllamaLanguageModelProvider::global(cx) {
-            Some(cx.observe(&provider, |_this, _provider, cx| {
-                cx.notify();
-            }))
-        } else {
-            None
-        };
+    pub fn new(http_client: Arc<dyn HttpClient>, cx: &mut Context<Self>) -> Self {
+        let ollama_provider = OllamaLanguageModelProvider::global(http_client, cx)
+        cx.observe(&ollama_provider, |_this, _provider, cx| {
+            cx.notify();
+        }).detach();
 
         Self {
             model,
@@ -81,7 +77,6 @@ impl OllamaEditPredictionProvider {
             file_extension: None,
             current_completion: None,
             pending_refresh: None,
-            _service_subscription: subscription,
         }
     }
 
@@ -510,7 +505,7 @@ mod tests {
 
         let _language_provider = cx.update(|cx| {
             let provider =
-                cx.new(|cx| OllamaLanguageModelProvider::new(fake_http_client.clone(), cx));
+                cx.new(|cx| OllamaLanguageModelProvider::global(fake_http_client.clone(), cx));
             OllamaLanguageModelProvider::set_global(provider.clone(), cx);
             provider
         });
@@ -588,7 +583,7 @@ mod tests {
 
         let language_provider = cx.update(|cx| {
             let provider =
-                cx.new(|cx| OllamaLanguageModelProvider::new(fake_http_client.clone(), cx));
+                cx.new(|cx| OllamaLanguageModelProvider::global(fake_http_client.clone(), cx));
             OllamaLanguageModelProvider::set_global(provider.clone(), cx);
             provider
         });
@@ -624,7 +619,7 @@ mod tests {
 
         let _provider = cx.update(|cx| {
             let provider =
-                cx.new(|cx| OllamaLanguageModelProvider::new(fake_http_client.clone(), cx));
+                cx.new(|cx| OllamaLanguageModelProvider::global(fake_http_client.clone(), cx));
             OllamaLanguageModelProvider::set_global(provider, cx);
         });
 
@@ -677,7 +672,7 @@ mod tests {
 
         let _provider = cx.update(|cx| {
             let provider =
-                cx.new(|cx| OllamaLanguageModelProvider::new(fake_http_client.clone(), cx));
+                cx.new(|cx| OllamaLanguageModelProvider::global(fake_http_client.clone(), cx));
             OllamaLanguageModelProvider::set_global(provider, cx);
         });
 
@@ -757,7 +752,7 @@ mod tests {
 
         let _provider = cx.update(|cx| {
             let provider =
-                cx.new(|cx| OllamaLanguageModelProvider::new(fake_http_client.clone(), cx));
+                cx.new(|cx| OllamaLanguageModelProvider::global(fake_http_client.clone(), cx));
             OllamaLanguageModelProvider::set_global(provider, cx);
         });
 
@@ -812,7 +807,7 @@ mod tests {
 
         let provider = cx.update(|cx| {
             let provider =
-                cx.new(|cx| OllamaLanguageModelProvider::new(fake_http_client.clone(), cx));
+                cx.new(|cx| OllamaLanguageModelProvider::global(fake_http_client.clone(), cx));
             OllamaLanguageModelProvider::set_global(provider.clone(), cx);
 
             provider.update(cx, |provider, cx| {
@@ -942,7 +937,7 @@ mod tests {
 
         let _provider = cx.update(|cx| {
             let provider =
-                cx.new(|cx| OllamaLanguageModelProvider::new(fake_http_client.clone(), cx));
+                cx.new(|cx| OllamaLanguageModelProvider::global(fake_http_client.clone(), cx));
             OllamaLanguageModelProvider::set_global(provider, cx);
         });
 

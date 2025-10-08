@@ -124,7 +124,7 @@ fn register_language_model_providers(
         cx,
     );
     registry.register_provider(
-        Arc::new(OllamaLanguageModelProvider::new(client.http_client(), cx)),
+        OllamaLanguageModelProvider::global(client.http_client(), cx),
         cx,
     );
     registry.register_provider(

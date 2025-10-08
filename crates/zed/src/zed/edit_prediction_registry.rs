@@ -116,9 +116,16 @@ fn assign_edit_prediction_providers(
     user_store: Entity<UserStore>,
     cx: &mut App,
 ) {
-    if provider == EditPredictionProvider::Codestral {
-        let mistral = MistralLanguageModelProvider::global(client.http_client(), cx);
-        mistral.load_codestral_api_key(cx).detach();
+    match provider {
+        EditPredictionProvider::Codestral => {
+            let mistral = MistralLanguageModelProvider::global(client.http_client(), cx);
+            mistral.load_codestral_api_key(cx).detach();
+        }
+        EditPredictionProvider::Ollama => {
+            let ollama = OllamaLanguageModelProvider::global(client.http_client(), cx);
+            ollama.authenticate(cx).detach();
+        }
+        _ => {}
     }
     for (editor, window) in editors.borrow().iter() {
         _ = window.update(cx, |_window, window, cx| {
@@ -205,6 +212,11 @@ fn assign_edit_prediction_provider(
             let provider = cx.new(|_| CodestralCompletionProvider::new(http_client));
             editor.set_edit_prediction_provider(Some(provider), window, cx);
         }
+        EditPredictionProvider::Ollama => {
+            let http_client = client.http_client();
+            let provider = cx.new(|cx| OllamaEditPredictionProvider::new(http_client, cx));
+            editor.set_edit_prediction_provider(Some(provider), window, cx);
+        }
         EditPredictionProvider::Zed => {
             if user_store.read(cx).current_user().is_some() {
                 let mut worktree = None;
@@ -264,34 +276,6 @@ fn assign_edit_prediction_provider(
                         editor.set_edit_prediction_provider(Some(provider), window, cx);
                     }
                 }
-            }
-        }
-        EditPredictionProvider::Ollama => {
-            let settings = &AllLanguageModelSettings::get_global(cx).ollama;
-
-            let model = if let Some(first_model) = settings.available_models.first() {
-                Some(first_model.name.clone())
-            } else if let Some(provider) = OllamaLanguageModelProvider::global(cx) {
-                // If no models are available yet, trigger refresh and try again
-                let available_models = provider.read(cx).available_models_for_completion(cx);
-                if available_models.is_empty() {
-                    provider.update(cx, |provider, cx| {
-                        provider.refresh_models(cx);
-                    });
-                }
-                available_models.first().map(|m| m.name.clone())
-            } else {
-                None
-            };
-
-            if let Some(model) = model {
-                let provider = cx.new(|cx| OllamaEditPredictionProvider::new(model, cx));
-                editor.set_edit_prediction_provider(Some(provider), window, cx);
-            } else {
-                // If no model is available, still create the provider but it will be inactive
-                // This allows the UI to show that Ollama is selected but not ready
-                editor
-                    .set_edit_prediction_provider::<OllamaEditPredictionProvider>(None, window, cx);
             }
         }
     }

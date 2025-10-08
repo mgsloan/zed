@@ -166,14 +166,14 @@ impl State {
     }
 }
 
-impl OllamaLanguageModelProvider {
-    pub fn global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalOllamaLanguageModelProvider>()
-            .map(|provider| provider.0.clone())
-    }
+struct GlobalOllamaLanguageModelProvider(Arc<OllamaLanguageModelProvider>);
 
-    pub fn set_global(provider: Entity<Self>, cx: &mut App) {
-        cx.set_global(GlobalOllamaLanguageModelProvider(provider));
+impl Global for GlobalOllamaLanguageModelProvider {}
+
+impl OllamaLanguageModelProvider {
+    pub fn try_global(cx: &App) -> Option<&Arc<Self>> {
+        cx.try_global::<GlobalOllamaLanguageModelProvider>()
+            .map(|this| &this.0)
     }
 
     pub fn available_models_for_completion(&self, cx: &App) -> Vec<ollama::Model> {
@@ -195,7 +195,11 @@ impl OllamaLanguageModelProvider {
         });
     }
 
-    pub fn new(http_client: Arc<dyn HttpClient>, cx: &mut App) -> Self {
+    pub fn global(http_client: Arc<dyn HttpClient>, cx: &mut App) -> Arc<Self> {
+        if let Some(this) = Self::try_global(cx) {
+            return this.clone();
+        }
+
         let this = Self {
             http_client: http_client.clone(),
             state: cx.new(|cx| {
@@ -233,11 +237,8 @@ impl OllamaLanguageModelProvider {
             }),
         };
 
-        // Create an entity wrapper and set as global so edit prediction providers can access it
-        let provider_entity = cx.new(|_| this.clone());
-        Self::set_global(provider_entity, cx);
-
-        this
+        cx.set_global(GlobalOllamaLanguageModelProvider(Arc::new(this)));
+        cx.global::<GlobalOllamaLanguageModelProvider>().0.clone()
     }
 
     fn settings(cx: &App) -> &OllamaSettings {
@@ -974,10 +975,6 @@ impl Render for ConfigurationView {
             )
     }
 }
-
-struct GlobalOllamaLanguageModelProvider(Entity<OllamaLanguageModelProvider>);
-
-impl Global for GlobalOllamaLanguageModelProvider {}
 
 fn tool_into_ollama(tool: LanguageModelRequestTool) -> ollama::OllamaTool {
     ollama::OllamaTool::Function {

@@ -109,9 +109,10 @@ impl MistralLanguageModelProvider {
     }
 
     pub fn global(http_client: Arc<dyn HttpClient>, cx: &mut App) -> Arc<Self> {
-        if let Some(this) = cx.try_global::<GlobalMistralLanguageModelProvider>() {
-            return this.0.clone();
+        if let Some(this) = Self::try_global(cx) {
+            return this.clone();
         }
+
         let state = cx.new(|cx| {
             cx.observe_global::<SettingsStore>(|this: &mut State, cx| {
                 let api_url = Self::api_url(cx);
