@@ -2,10 +2,13 @@ use hashbrown::HashTable;
 use regex::Regex;
 use std::{
     borrow::Cow,
+    collections::VecDeque,
+    fmt::Debug,
     hash::{Hash, Hasher as _},
     path::Path,
     sync::LazyLock,
 };
+use util::debug_panic;
 use util::rel_path::RelPath;
 
 use crate::reference::Reference;
@@ -72,11 +75,7 @@ impl Occurrences {
         }
     }
 
-    pub fn from_path(path: &Path) -> Self {
-        Self::from_identifiers(iter_path_without_extension(path))
-    }
-
-    fn add_hash(&mut self, hash: u64) {
+    pub fn add_hash(&mut self, hash: u64) {
         self.table
             .entry(
                 hash,
@@ -86,6 +85,37 @@ impl Occurrences {
             .and_modify(|entry| entry.count += 1)
             .or_insert(OccurrenceEntry { hash, count: 1 });
         self.total_count += 1;
+    }
+
+    pub fn subtract_hash(&mut self, hash: u64) {
+        let entry = self.table.entry(
+            hash,
+            |entry: &OccurrenceEntry| entry.hash == hash,
+            |entry| entry.hash,
+        );
+        match entry {
+            hashbrown::hash_table::Entry::Occupied(mut entry) => {
+                let new_count = entry.get().count.checked_sub(1);
+                if let Some(new_count) = new_count {
+                    if new_count == 0 {
+                        entry.remove();
+                    } else {
+                        entry.get_mut().count = new_count;
+                    }
+                } else {
+                    debug_panic!("Hash subtracted from occurrences more times than it was added.");
+                }
+            }
+            hashbrown::hash_table::Entry::Vacant(_) => {
+                debug_panic!("Hash subtracted from occurrences more times than it was added.");
+            }
+        }
+        debug_assert!(self.total_count != 0);
+        self.total_count = self.total_count.saturating_sub(1);
+    }
+
+    pub fn from_path(path: &Path) -> Self {
+        Self::from_identifiers(iter_path_without_extension(path))
     }
 
     fn contains_hash(&self, hash: u64) -> bool {
@@ -249,6 +279,50 @@ pub fn weighted_overlap_coefficient<'a>(
         0.0
     } else {
         numerator as f32 / denominator as f32
+    }
+}
+
+pub struct SlidingWindow<Id> {
+    occurrences: Occurrences,
+    regions: VecDeque<(Id, Vec<u64>)>,
+}
+
+impl<Id: Debug + PartialEq> SlidingWindow<Id> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            occurrences: Occurrences::default(),
+            regions: VecDeque::with_capacity(capacity),
+        }
+    }
+
+    fn add(&mut self, id: Id, text: &str) {
+        let mut hashes = Vec::new();
+        for identifier in IDENTIFIER_REGEX.find_iter(text).map(|mat| mat.as_str()) {
+            for identifier_part in split_identifier(identifier) {
+                // TODO: If weighted jaccard or weighted overlap coefficient is used then this could
+                // skip hashes not present in the occurrences this is compared with.
+                let hash = fx_hash(&identifier_part.to_lowercase());
+                self.occurrences.add_hash(hash);
+                hashes.push(hash);
+            }
+        }
+        self.regions.push_back((id, hashes));
+    }
+
+    fn remove(&mut self, id: Id) {
+        #[cfg(debug_assertions)]
+        {
+            let (removed_id, _) = self
+                .regions
+                .pop_front()
+                .expect("No SlidingWindow region to remove");
+            assert_eq!(removed_id, id);
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            self.regions.pop_front();
+        }
     }
 }
 

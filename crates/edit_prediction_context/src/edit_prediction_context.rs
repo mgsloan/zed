@@ -34,6 +34,7 @@ pub struct EditPredictionContext {
     pub excerpt_text: EditPredictionExcerptText,
     pub cursor_offset_in_excerpt: usize,
     pub declarations: Vec<ScoredDeclaration>,
+    pub similar_snippets: Vec<SimilarSnippet>,
 }
 
 impl EditPredictionContext {
@@ -145,11 +146,14 @@ impl EditPredictionContext {
             vec![]
         };
 
+        let similar_snippets = similar_snippets(cursor_offset_in_file, buffer)
+
         Some(Self {
             excerpt,
             excerpt_text,
             cursor_offset_in_excerpt,
             declarations,
+            similar_snippets,
         })
     }
 }
