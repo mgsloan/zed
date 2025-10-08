@@ -261,7 +261,12 @@ impl Render for EditPredictionButton {
                             } else {
                                 Some(ContextMenu::build(window, cx, |menu, _, _| {
                                     let fs = fs.clone();
-                                    menu.entry("Use Zed AI", None, move |_, cx| {
+                                    menu.entry(
+                                        "Configure Codestral API Key",
+                                        None,
+                                        move |_, cx| {},
+                                    );
+                                    menu.entry("Use Zed AI instead", None, move |_, cx| {
                                         set_completion_provider(
                                             fs.clone(),
                                             cx,
@@ -275,14 +280,14 @@ impl Render for EditPredictionButton {
                         .trigger_with_tooltip(
                             IconButton::new("codestral-icon", icon)
                                 .shape(IconButtonShape::Square)
-                                .when(has_error, |this| {
+                                .when(!has_api_key, |this| {
                                     this.indicator(Indicator::dot().color(Color::Error))
                                         .indicator_border_color(Some(
                                             cx.theme().colors().status_bar_background,
                                         ))
                                 })
-                                .when(enabled && !has_error && is_ready, |this| {
-                                    this.indicator(Indicator::dot().color(Color::Muted))
+                                .when(has_api_key && !enabled, |this| {
+                                    this.indicator(Indicator::bar().color(Color::Muted))
                                         .indicator_border_color(Some(
                                             cx.theme().colors().status_bar_background,
                                         ))
@@ -794,7 +799,7 @@ impl EditPredictionButton {
             self.build_language_settings_menu(menu, window, cx)
                 .separator()
                 // todo! remove
-                .entry("Configure API Key", None, |_window, cx| {
+                .entry("Configure Codestral API Key", None, |_window, cx| {
                     cx.dispatch_action(&zed_actions::OpenSettings);
                 })
             // .entry("Sign Out", None, |_window, cx| {
