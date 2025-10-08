@@ -268,14 +268,22 @@ pub mod settings_profile_selector {
 }
 
 pub mod agent {
-    use gpui::actions;
+    use gpui::{Action, actions};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    /// Opens the agent settings panel.
+    #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
+    #[action(namespace = agent, deprecated_aliases = ["agent::OpenConfiguration"])]
+    pub struct OpenSettings {
+        /// Name of the LLM provider to open settings for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub provider: Option<String>,
+    }
 
     actions!(
         agent,
         [
-            /// Opens the agent settings panel.
-            #[action(deprecated_aliases = ["agent::OpenConfiguration"])]
-            OpenSettings,
             /// Opens the agent onboarding modal.
             OpenOnboardingModal,
             /// Opens the ACP onboarding modal.

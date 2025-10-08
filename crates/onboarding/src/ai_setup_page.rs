@@ -218,7 +218,7 @@ fn render_llm_provider_card(
                 .icon_color(Color::Muted)
                 .icon_size(IconSize::XSmall)
                 .on_click(|_event, window, cx| {
-                    window.dispatch_action(OpenSettings.boxed_clone(), cx)
+                    window.dispatch_action(OpenSettings { provider: None }.boxed_clone(), cx)
                 })
                 .tab_index({
                     *tab_index += 1;

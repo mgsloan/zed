@@ -299,7 +299,7 @@ impl PickerDelegate for AcpModelPickerDelegate {
                         .icon_position(IconPosition::Start)
                         .on_click(|_, window, cx| {
                             window.dispatch_action(
-                                zed_actions::agent::OpenSettings.boxed_clone(),
+                                zed_actions::agent::OpenSettings { provider: None }.boxed_clone(),
                                 cx,
                             );
                         }),
