@@ -1,5 +1,6 @@
 use crate::{OffsetUtf16, Point, PointUtf16, TextSummary, Unclipped};
 use arrayvec::ArrayString;
+use memchr::memchr2_iter;
 use std::{cmp, ops::Range};
 use sum_tree::Bias;
 use unicode_segmentation::GraphemeCursor;
@@ -27,13 +28,29 @@ impl Chunk {
 
     #[inline(always)]
     pub fn push_str(&mut self, text: &str) {
-        for (char_ix, c) in text.char_indices() {
-            let ix = self.text.len() + char_ix;
-            self.chars |= 1 << ix;
-            self.chars_utf16 |= 1 << ix;
-            self.chars_utf16 |= (c.len_utf16() as u128) << ix;
-            self.newlines |= ((c == '\n') as u128) << ix;
-            self.tabs |= ((c == '\t') as u128) << ix;
+        if text.is_ascii() {
+            let char_mask = 1u128
+                .unbounded_shl(text.len() as u32)
+                .wrapping_sub(1)
+                .unbounded_shl(self.text.len() as u32);
+            self.chars |= char_mask;
+            self.chars_utf16 |= char_mask;
+            // TODO: Also use this when non-ascii?
+            for char_ix in memchr2_iter(b'\n', b'\t', text.as_bytes()) {
+                let c = self.text.as_bytes()[char_ix];
+                let ix = self.text.len() + char_ix;
+                self.newlines |= ((c == b'\n') as u128) << ix;
+                self.tabs |= ((c == b'\t') as u128) << ix;
+            }
+        } else {
+            for (char_ix, c) in text.char_indices() {
+                let ix = self.text.len() + char_ix;
+                self.chars |= 1 << ix;
+                self.chars_utf16 |= 1 << ix;
+                self.chars_utf16 |= (c.len_utf16() as u128) << ix;
+                self.newlines |= ((c == '\n') as u128) << ix;
+                self.tabs |= ((c == '\t') as u128) << ix;
+            }
         }
         self.text.push_str(text);
     }
