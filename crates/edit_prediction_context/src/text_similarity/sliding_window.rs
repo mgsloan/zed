@@ -1,55 +1,56 @@
-use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::{array, collections::VecDeque};
 use util::debug_panic;
 
 use crate::{HashFrom, Occurrences};
 
 #[derive(Debug)]
-pub struct SlidingWindow<D, T, S> {
-    target: T,
+pub struct SlidingWindow<const TN: usize, T, D, S> {
+    targets: [T; TN],
     intersection: Occurrences<S>,
-    regions: VecDeque<WeightedOverlapRegion<D, S>>,
-    numerator: u32,
+    regions: VecDeque<WeightedOverlapRegion<TN, D, S>>,
     window_count: u32,
-    jaccard_denominator_part: u32,
+    numerators: [u32; TN],
+    jaccard_denominator_parts: [u32; TN],
 }
 
 #[derive(Debug)]
-struct WeightedOverlapRegion<D, S> {
+struct WeightedOverlapRegion<const TN: usize, D, S> {
     data: D,
-    added_hashes: Vec<AddedHash<S>>,
+    added_hashes: Vec<AddedHash<TN, S>>,
     window_count_delta: u32,
 }
 
 #[derive(Debug)]
-struct AddedHash<S> {
+struct AddedHash<const TN: usize, S> {
     hash: HashFrom<S>,
-    target_count: u32,
+    target_counts: [u32; TN],
 }
 
-impl<D, T: AsRef<Occurrences<S>>, S> SlidingWindow<D, T, S> {
-    pub fn new(target: T) -> Self {
-        Self::with_capacity(target, 0)
+impl<const TN: usize, T: AsRef<Occurrences<S>>, D, S> SlidingWindow<TN, T, D, S> {
+    pub fn new(targets: [T; TN]) -> Self {
+        Self::with_capacity(targets, 0)
     }
 
-    pub fn with_capacity(target: T, capacity: usize) -> Self {
-        let jaccard_denominator_part = target.as_ref().len();
+    pub fn with_capacity(targets: [T; TN], capacity: usize) -> Self {
+        let jaccard_denominator_parts = targets.each_ref().map(|target| target.as_ref().len());
         Self {
-            target,
+            targets,
             intersection: Occurrences::default().into(),
             regions: VecDeque::with_capacity(capacity),
-            numerator: 0,
             window_count: 0,
-            jaccard_denominator_part,
+            numerators: [0; TN],
+            jaccard_denominator_parts: jaccard_denominator_parts,
         }
     }
 
     pub fn clear(&mut self) {
         self.intersection.clear();
         self.regions.clear();
-        self.numerator = 0;
         self.window_count = 0;
-        self.jaccard_denominator_part = 0;
+        self.numerators = [0; TN];
+        self.jaccard_denominator_parts =
+            self.targets.each_ref().map(|target| target.as_ref().len());
     }
 
     pub fn push_back(&mut self, data: D, hashes: impl IntoIterator<Item = HashFrom<S>>) {
@@ -57,14 +58,20 @@ impl<D, T: AsRef<Occurrences<S>>, S> SlidingWindow<D, T, S> {
         let mut window_count_delta = 0;
         for hash in hashes {
             window_count_delta += 1;
-            let target_count = self.target.as_ref().get_count(hash);
-            if target_count > 0 {
-                added_hashes.push(AddedHash { hash, target_count });
+            let target_counts =
+                array::from_fn(|target_ix| self.targets[target_ix].as_ref().get_count(hash));
+            if target_counts.iter().any(|count| *count > 0) {
+                added_hashes.push(AddedHash {
+                    hash,
+                    target_counts,
+                });
                 let window_hash_count = self.intersection.add_hash(hash);
-                if window_hash_count <= target_count {
-                    self.numerator += 1;
-                } else {
-                    self.jaccard_denominator_part += 1;
+                for (target_ix, target_count) in target_counts.iter().enumerate() {
+                    if window_hash_count <= *target_count {
+                        self.numerators[target_ix] += 1;
+                    } else {
+                        self.jaccard_denominator_parts[target_ix] += 1;
+                    }
                 }
             }
         }
@@ -82,20 +89,27 @@ impl<D, T: AsRef<Occurrences<S>>, S> SlidingWindow<D, T, S> {
             .pop_front()
             .expect("No sliding window region to remove");
 
-        for AddedHash { hash, target_count } in removed.added_hashes {
+        for AddedHash {
+            hash,
+            target_counts,
+        } in removed.added_hashes
+        {
             let window_hash_count = self.intersection.remove_hash(hash);
-            if window_hash_count < target_count {
-                if let Some(numerator) = self.numerator.checked_sub(1) {
-                    self.numerator = numerator;
+            for (target_ix, target_count) in target_counts.iter().enumerate() {
+                if window_hash_count < *target_count {
+                    if let Some(numerator) = self.numerators[target_ix].checked_sub(1) {
+                        self.numerators[target_ix] = numerator;
+                    } else {
+                        debug_panic!("bug: underflow in sliding window text similarity");
+                    }
                 } else {
-                    debug_panic!("bug: underflow in sliding window text similarity");
-                }
-            } else {
-                if let Some(jaccard_denominator_part) = self.jaccard_denominator_part.checked_sub(1)
-                {
-                    self.jaccard_denominator_part = jaccard_denominator_part;
-                } else {
-                    debug_panic!("bug: underflow in sliding window text similarity");
+                    if let Some(jaccard_denominator_part) =
+                        self.jaccard_denominator_parts[target_ix].checked_sub(1)
+                    {
+                        self.jaccard_denominator_parts[target_ix] = jaccard_denominator_part;
+                    } else {
+                        debug_panic!("bug: underflow in sliding window text similarity");
+                    }
                 }
             }
         }
@@ -109,24 +123,32 @@ impl<D, T: AsRef<Occurrences<S>>, S> SlidingWindow<D, T, S> {
         removed.data
     }
 
-    pub fn weighted_overlap_coefficient(&self) -> f32 {
-        let denominator = self.target.as_ref().len().min(self.window_count);
-        if denominator == 0 {
-            0.0
-        } else {
-            self.numerator as f32 / denominator as f32
-        }
+    pub fn weighted_overlap_coefficient(&self) -> [f32; TN] {
+        array::from_fn(|target_ix| {
+            let denominator = self.targets[target_ix]
+                .as_ref()
+                .len()
+                .min(self.window_count);
+            if denominator == 0 {
+                0.0
+            } else {
+                self.numerators[target_ix] as f32 / denominator as f32
+            }
+        })
     }
 
-    pub fn weighted_jaccard_similarity(&self) -> f32 {
-        let mut denominator = self.jaccard_denominator_part;
-        if let Some(other_denominator_part) = self.window_count.checked_sub(self.intersection.len())
-        {
-            denominator += other_denominator_part;
-        } else {
-            debug_panic!("bug: underflow in sliding window text similarity");
-        }
-        self.numerator as f32 / denominator as f32
+    pub fn weighted_jaccard_similarity(&self) -> [f32; TN] {
+        array::from_fn(|target_ix| {
+            let mut denominator = self.jaccard_denominator_parts[target_ix];
+            if let Some(other_denominator_part) =
+                self.window_count.checked_sub(self.intersection.len())
+            {
+                denominator += other_denominator_part;
+            } else {
+                debug_panic!("bug: underflow in sliding window text similarity");
+            }
+            self.numerator as f32 / denominator as f32
+        })
     }
 }
 
@@ -158,7 +180,7 @@ mod test {
 
     #[derive(Debug)]
     struct CheckedSlidingWindow {
-        inner: SlidingWindow<u32, Occurrences<IdentifierParts>, IdentifierParts>,
+        inner: SlidingWindow<u32, Occurrences<IdentifierParts>, 1, IdentifierParts>,
         text: String,
         first_line: u32,
         last_line: u32,
@@ -197,13 +219,13 @@ mod test {
             assert_eq!(
                 self.inner.weighted_overlap_coefficient(),
                 Occurrences::new(IdentifierParts::occurrences_in_str(&self.text))
-                    .weighted_overlap_coefficient(&self.inner.target),
+                    .weighted_overlap_coefficient(&self.inner.targets),
                 "weighted_overlap_coefficient"
             );
             assert_eq!(
                 self.inner.weighted_jaccard_similarity(),
                 Occurrences::new(IdentifierParts::occurrences_in_str(&self.text))
-                    .weighted_jaccard_similarity(&self.inner.target),
+                    .weighted_jaccard_similarity(&self.inner.targets),
                 "weighted_jaccard_similarity"
             );
         }
