@@ -509,6 +509,8 @@ actions!(
         GoToDefinition,
         /// Goes to definition in a split pane.
         GoToDefinitionSplit,
+        /// Goes to the definition of the symbol at cursor.
+        GoToDefinitionGuess,
         /// Goes to the next diff hunk.
         GoToHunk,
         /// Goes to the previous diff hunk.

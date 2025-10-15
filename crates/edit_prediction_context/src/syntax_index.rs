@@ -3,9 +3,8 @@ use collections::{HashMap, HashSet};
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::{FutureExt as _, StreamExt, future};
-use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Task, WeakEntity};
+use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Global, Task, WeakEntity};
 use itertools::Itertools;
-
 use language::{Buffer, BufferEvent};
 use postage::stream::Stream as _;
 use project::buffer_store::{BufferStore, BufferStoreEvent};
@@ -88,7 +87,33 @@ struct BufferState {
     task: Option<Task<()>>,
 }
 
+#[derive(Default)]
+struct GlobalSyntaxIndexes(HashMap<WeakEntity<Project>, WeakEntity<SyntaxIndex>>);
+
+impl Global for GlobalSyntaxIndexes {}
+
 impl SyntaxIndex {
+    pub fn global(
+        project: &Entity<Project>,
+        file_indexing_parallelism: usize,
+        cx: &mut App,
+    ) -> Entity<SyntaxIndex> {
+        let weak_project = project.downgrade();
+        if let Some(syntax_index) = cx
+            .default_global::<GlobalSyntaxIndexes>()
+            .0
+            .get(&weak_project)
+            .and_then(WeakEntity::upgrade)
+        {
+            return syntax_index;
+        }
+        let syntax_index = cx.new(|cx| SyntaxIndex::new(&project, file_indexing_parallelism, cx));
+        cx.default_global::<GlobalSyntaxIndexes>()
+            .0
+            .insert(weak_project, syntax_index.downgrade());
+        syntax_index
+    }
+
     pub fn new(
         project: &Entity<Project>,
         file_indexing_parallelism: usize,

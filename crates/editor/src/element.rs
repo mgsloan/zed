@@ -400,6 +400,11 @@ impl EditorElement {
         });
         register_action(editor, window, |editor, action, window, cx| {
             editor
+                .go_to_definition_guess(action, window, cx)
+                .detach_and_log_err(cx);
+        });
+        register_action(editor, window, |editor, action, window, cx| {
+            editor
                 .go_to_declaration(action, window, cx)
                 .detach_and_log_err(cx);
         });

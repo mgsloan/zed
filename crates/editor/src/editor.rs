@@ -52,6 +52,10 @@ pub mod test;
 pub(crate) use actions::*;
 pub use display_map::{ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder};
 pub use edit_prediction::Direction;
+use edit_prediction_context::{
+    BufferDeclaration, Declaration, EditPredictionContext, EditPredictionContextOptions, Imports,
+    SyntaxIndex,
+};
 pub use editor_settings::{
     CurrentLineHighlight, DocumentColorsRenderMode, EditorSettings, HideMouseMode,
     ScrollBeyondLastLine, ScrollbarAxes, SearchSettings, ShowMinimap,
@@ -16457,6 +16461,95 @@ impl Editor {
                         Some(kind),
                         definitions
                             .into_iter()
+                            .filter(|location| {
+                                hover_links::exclude_link_to_position(&buffer, &head, location, cx)
+                            })
+                            .map(HoverLink::Text)
+                            .collect::<Vec<_>>(),
+                        split,
+                        window,
+                        cx,
+                    )
+                })?
+                .await?;
+            anyhow::Ok(navigated)
+        })
+    }
+
+    pub fn go_to_definition_guess(
+        &mut self,
+        _: &GoToDefinitionGuess,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Navigated>> {
+        let Some(project) = self.project.as_ref() else {
+            return Task::ready(Err(anyhow!("No project")));
+        };
+        let head = self.selections.newest::<Point>(cx).head();
+        let Some((buffer, head)) = self.buffer.read(cx).text_anchor_for_position(head, cx) else {
+            return Task::ready(Ok(Navigated::No));
+        };
+
+        let snapshot = buffer.read(cx).snapshot();
+        let cursor_point = head.to_point(&snapshot);
+        let parent_abs_path = project::File::from_dyn(buffer.read(cx).file()).and_then(|f| {
+            let mut path = f.worktree.read(cx).absolutize(&f.path);
+            if path.pop() { Some(path) } else { None }
+        });
+        let file_indexing_parallelism = 1;
+        let index = SyntaxIndex::global(project, file_indexing_parallelism, cx);
+        let index_state = index.read_with(cx, |index, _cx| Arc::downgrade(index.state()));
+        let declarations_task = cx.background_spawn(async move {
+            let imports = Imports::gather(&snapshot, parent_abs_path.as_deref());
+            let mut single_reference_map = HashMap::default();
+            single_reference_map.insert(reference.identifier.clone(), vec![reference.clone()]);
+            let Some(index_state) = index_state.upgrade() else {
+                return Ok(vec![]);
+            };
+            let index_state = index_state.lock().await;
+            let edit_prediction_context = EditPredictionContext::gather_context_with_references_fn(
+                cursor_point,
+                &snapshot,
+                &imports,
+                &zeta2::DEFAULT_CONTEXT_OPTIONS,
+                Some(&index_state),
+                |_, _, _| single_reference_map,
+            );
+            let Some(edit_prediction_context) = edit_prediction_context else {
+                return Err(anyhow!("Line doesn't fit in excerpt"));
+            };
+            Ok(edit_prediction_context.declarations)
+        });
+
+        let project = project.clone();
+        cx.spawn_in(window, async move |editor, cx| {
+            let declarations = declarations_task.await?;
+            let kind = GotoDefinitionKind::Symbol;
+            let split = false;
+            let navigated = editor
+                .update_in(cx, |editor, window, cx| {
+                    editor.navigate_to_hover_links(
+                        Some(kind),
+                        declarations
+                            .into_iter()
+                            .filter_map(|declaration| match declaration.declaration {
+                                Declaration::Buffer {
+                                    buffer_id,
+                                    declaration: BufferDeclaration { item_range, .. },
+                                    ..
+                                } => {
+                                    let buffer =
+                                        project.read(cx).buffer_store().read(cx).get(buffer_id)?;
+                                    let buffer_ref = buffer.read(cx);
+                                    let range = buffer_ref.anchor_after(item_range.start)
+                                        ..buffer_ref.anchor_before(item_range.end);
+                                    Some(LocationLink {
+                                        origin: None,
+                                        target: Location { buffer, range },
+                                    })
+                                }
+                                Declaration::File { .. } => None,
+                            })
                             .filter(|location| {
                                 hover_links::exclude_link_to_position(&buffer, &head, location, cx)
                             })

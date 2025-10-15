@@ -5271,6 +5271,7 @@ dependencies = [
  "dap",
  "db",
  "edit_prediction",
+ "edit_prediction_context",
  "emojis",
  "file_icons",
  "fs",
@@ -5330,6 +5331,7 @@ dependencies = [
  "zed-sum-tree",
  "zed-util",
  "zed_actions",
+ "zeta2",
  "zlog",
 ]
 

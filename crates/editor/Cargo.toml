@@ -30,6 +30,7 @@ test-support = [
 ]
 
 [dependencies]
+edit_prediction_context.workspace = true
 aho-corasick.workspace = true
 anyhow.workspace = true
 assets.workspace = true
@@ -93,6 +94,7 @@ vim_mode_setting.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
 workspace-hack.workspace = true
+zeta2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
