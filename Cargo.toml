@@ -197,7 +197,7 @@ members = [
     "crates/sum_tree",
     "crates/svg_preview",
     "crates/system_specs",
-    "crates/syntax_theme",
+    "crates/typst_viewer",
     "crates/tab_switcher",
     "crates/task",
     "crates/tasks_ui",
@@ -396,6 +396,7 @@ markdown = { path = "crates/markdown" }
 markdown_preview = { path = "crates/markdown_preview" }
 mermaid_render = { path = "crates/mermaid_render" }
 svg_preview = { path = "crates/svg_preview" }
+typst_viewer = { path = "crates/typst_viewer" }
 media = { path = "crates/media" }
 menu = { path = "crates/menu" }
 mime = "0.3.17"
@@ -995,6 +996,8 @@ proc-macro2 = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 taffy = { opt-level = 3 }
 resvg = { opt-level = 3 }
+usvg = { opt-level = 3 }
+tiny-skia = { opt-level = 3 }
 wasmtime = { opt-level = 3 }
 cranelift-codegen = { opt-level = 3 }
 wasmtime-environ = { opt-level = 3 }
