@@ -942,6 +942,20 @@ impl WgpuRenderer {
         Some((texture, view))
     }
 
+    /// Recreate the swapchain without changing dimensions.
+    ///
+    /// On X11, the WSI's pixmap-to-window binding can be invalidated by an unmap/remap cycle
+    /// (e.g. when a tiling WM moves the window between workspaces) without wgpu reporting the
+    /// surface as Lost or Outdated. Forcing a reconfigure rebuilds the swapchain images and
+    /// re-establishes the binding.
+    pub fn reconfigure_surface(&mut self) {
+        let surface_config = self.surface_config.clone();
+        let resources = self.resources_mut();
+        resources
+            .surface
+            .configure(&resources.device, &surface_config);
+    }
+
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         let width = size.width.0 as u32;
         let height = size.height.0 as u32;

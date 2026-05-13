@@ -786,6 +786,7 @@ impl X11Client {
                 let mut state = self.0.borrow_mut();
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
                     window_ref.is_mapped = true;
+                    window_ref.window.reconfigure_surface();
                 }
                 state.update_refresh_loop(event.window);
             }
@@ -1971,9 +1972,8 @@ impl X11ClientState {
                         if let Some(window) = state.windows.get_mut(&x_window) {
                             let expose_event_received = window.expose_event_received;
                             window.expose_event_received = false;
-                            let force_render = std::mem::take(
-                                &mut window.window.state.borrow_mut().force_render_after_recovery,
-                            );
+                            let force_render =
+                                std::mem::take(&mut window.window.state.borrow_mut().force_render);
                             let window = window.window.clone();
                             drop(state);
                             window.refresh(RequestFrameOptions {
