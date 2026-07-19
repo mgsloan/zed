@@ -38,12 +38,13 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_tungstenite::WebSocketStream;
 use async_tungstenite::tungstenite::Message;
 use futures::StreamExt as _;
 use gpui::SvgRenderer;
 
-use typst_viewer::svg_stream::{self, PreviewSocket};
-use typst_viewer::{DEFS_CLOSE, GLYPH_DEFS_OPEN, inject_glyph_defs, parse_page_header};
+use smol::net::TcpStream;
+use typst_viewer::{DEFS_CLOSE, GLYPH_DEFS_OPEN, connect, inject_glyph_defs, parse_page_header};
 
 fn main() {
     let which = std::env::args().nth(1);
@@ -240,7 +241,7 @@ fn compile_to_svg(
 }
 
 /// Receive the next SVG from the WebSocket, skipping binary/non-SVG messages.
-async fn receive_ws_svg(ws: &mut PreviewSocket) -> anyhow::Result<Vec<u8>> {
+async fn receive_ws_svg(ws: &mut WebSocketStream<TcpStream>) -> anyhow::Result<Vec<u8>> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if Instant::now() > deadline {
@@ -557,9 +558,7 @@ fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
 
         // Connect WebSocket.
         let ws_url = format!("ws://127.0.0.1:{data_plane_port}");
-        let mut ws = svg_stream::connect(&ws_url)
-            .await
-            .expect("WebSocket connect");
+        let mut ws = connect(&ws_url).await.expect("WebSocket connect");
 
         ws.send(Message::text("current"))
             .await

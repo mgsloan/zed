@@ -14,7 +14,7 @@ use svg_preview::{
 };
 use typst_viewer::{
     OpenPreview as TypstOpenPreview, OpenPreviewToTheSide as TypstOpenPreviewToTheSide,
-    typst_viewer_view::TypstPreviewView,
+    TypstPreviewView,
 };
 use ui::{Tooltip, prelude::*, text_for_keystroke};
 use workspace::Workspace;

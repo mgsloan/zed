@@ -1,7 +1,7 @@
-pub mod svg_stream;
-
 use anyhow::{Context as _, Result};
+use async_tungstenite::WebSocketStream;
 use async_tungstenite::tungstenite::Message;
+use async_tungstenite::tungstenite::client::IntoClientRequest as _;
 use futures::{FutureExt as _, StreamExt as _};
 use gpui::{
     App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
@@ -13,6 +13,7 @@ use multi_buffer::MultiBuffer;
 use project::Project;
 use serde::Deserialize;
 use settings::Settings as _;
+use smol::net::TcpStream;
 use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -175,6 +176,44 @@ pub async fn start_preview_via_lsp(
     Ok(format!("ws://127.0.0.1:{port}"))
 }
 
+/// Connect to a preview server's WebSocket endpoint.
+///
+/// Returns the WebSocket stream. Callers can use `futures::StreamExt::next()`
+/// to read messages and `futures::SinkExt::send()` to write, or call
+/// `.split()` to get independent read/write halves.
+pub async fn connect(url: &str) -> Result<WebSocketStream<TcpStream>> {
+    let parsed_url = url::Url::parse(url).context("parsing WebSocket URL")?;
+    let host = parsed_url
+        .host_str()
+        .context("WebSocket URL missing host")?;
+    let port = parsed_url.port().unwrap_or(80);
+    let addr = format!("{host}:{port}");
+
+    log::info!("typst_viewer: connecting to preview server at {addr}");
+
+    let tcp = TcpStream::connect(&addr)
+        .await
+        .with_context(|| format!("TCP connect to {addr}"))?;
+
+    let mut request = url
+        .into_client_request()
+        .context("building WebSocket request")?;
+    request.headers_mut().insert(
+        "Origin",
+        format!("http://{addr}")
+            .parse()
+            .context("building Origin header")?,
+    );
+
+    let (ws, _response) = async_tungstenite::client_async(request, tcp)
+        .await
+        .context("WebSocket handshake failed")?;
+
+    log::info!("typst_viewer: WebSocket connected to {addr}");
+
+    Ok(ws)
+}
+
 enum PreviewState {
     Connecting,
     Rendering {
@@ -329,7 +368,7 @@ impl TypstPreviewView {
         }
 
         log::info!("typst_viewer: connecting to LSP-provided preview at {url}");
-        let mut ws = svg_stream::connect(&url)
+        let mut ws = connect(&url)
             .await
             .with_context(|| format!("failed to connect to preview server at {url}"))?;
 
@@ -366,7 +405,7 @@ impl TypstPreviewView {
     }
 
     async fn receive_loop(
-        ws: &mut svg_stream::PreviewSocket,
+        ws: &mut WebSocketStream<TcpStream>,
         this: &gpui::WeakEntity<Self>,
         cx: &mut gpui::AsyncApp,
     ) -> anyhow::Result<()> {
