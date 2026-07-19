@@ -1,25 +1,18 @@
-//! Benchmarks for the typst preview pipeline.
+//! Benchmark for the typst preview pipeline (warm LSP + comemo path).
 //!
 //! This is an example rather than a `#[bench]`/criterion harness because it
 //! drives a real external `tinymist` binary against a real `.typ` document on
 //! disk — infrastructure that isn't available in CI, so it can't run as part of
 //! `cargo bench`/`cargo test`.
 //!
-//! ## `loop` (cold compile)
-//! Uses `tinymist compile --format svg` in a loop.  Each iteration is a cold
-//! compile (no memoization).  Measures compile + rasterize.
-//!
-//! ## `lsp` (warm compile with comemo)
-//! Drives tinymist LSP over stdin/stdout, opens the document, starts the
+//! It drives tinymist LSP over stdin/stdout, opens the document, starts the
 //! preview server, then sends `textDocument/didChange` edits over the LSP and
 //! receives SVGs over the WebSocket data plane.  This exercises the real
 //! incremental compilation path with comemo memoization — the same path used
 //! when the user types in the editor.
 //!
 //! Run with:
-//!   cargo run --release --example typst_preview_bench           # both
-//!   cargo run --release --example typst_preview_bench -- loop   # cold only
-//!   cargo run --release --example typst_preview_bench -- lsp    # warm only
+//!   cargo run --release --example typst_preview_bench
 //!
 //! Environment variables:
 //!   TINYMIST_BIN      — path to tinymist binary (default: ~/src/semitenn/tinymist/target/release/tinymist)
@@ -34,7 +27,6 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,8 +39,6 @@ use smol::net::TcpStream;
 use typst_viewer::{DEFS_CLOSE, GLYPH_DEFS_OPEN, connect, inject_glyph_defs, parse_page_header};
 
 fn main() {
-    let which = std::env::args().nth(1);
-
     let Some(bin) = tinymist_bin() else {
         eprintln!(
             "tinymist binary not found. Set TINYMIST_BIN, or ensure \
@@ -65,17 +55,7 @@ fn main() {
         return;
     };
 
-    match which.as_deref() {
-        Some("loop") => bench_preview_loop(&bin, &doc_path),
-        Some("lsp") => bench_preview_lsp(&bin, &doc_path),
-        Some(other) => {
-            eprintln!("unknown benchmark {other:?}; expected \"loop\" or \"lsp\"");
-        }
-        None => {
-            bench_preview_loop(&bin, &doc_path);
-            bench_preview_lsp(&bin, &doc_path);
-        }
-    }
+    bench_preview_lsp(&bin, &doc_path);
 }
 
 // -----------------------------------------------------------------------
@@ -198,48 +178,6 @@ fn rasterize_full(svg_renderer: &SvgRenderer, svg_bytes: &[u8]) -> anyhow::Resul
     Ok(start.elapsed())
 }
 
-/// Compile a .typ file to SVG using tinymist and return page 1's SVG bytes.
-fn compile_to_svg(
-    bin: &Path,
-    doc_path: &Path,
-    work_dir: &Path,
-) -> anyhow::Result<(Vec<u8>, Duration)> {
-    let svg_output = work_dir.join("__bench_output_{p}.svg");
-    let start = Instant::now();
-    let output = Command::new(bin)
-        .arg("compile")
-        .arg("--root")
-        .arg(work_dir)
-        .arg("--format")
-        .arg("svg")
-        .arg(doc_path)
-        .arg(svg_output.to_str().unwrap())
-        .current_dir(work_dir)
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run tinymist compile: {e}"))?;
-    let compile_dur = start.elapsed();
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("tinymist compile failed ({}): {stderr}", output.status);
-    }
-
-    let page1_path = work_dir.join("__bench_output_1.svg");
-    let svg_bytes = std::fs::read(&page1_path)
-        .map_err(|e| anyhow::anyhow!("failed to read page 1 SVG at {page1_path:?}: {e}"))?;
-
-    // Clean up SVG files.
-    for entry in std::fs::read_dir(work_dir).into_iter().flatten().flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("__bench_output_") && name.ends_with(".svg") {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-
-    Ok((svg_bytes, compile_dur))
-}
-
 /// Receive the next SVG from the WebSocket, skipping binary/non-SVG messages.
 async fn receive_ws_svg(ws: &mut WebSocketStream<TcpStream>) -> anyhow::Result<Vec<u8>> {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -280,67 +218,37 @@ struct IterResult {
     has_defs: bool,
 }
 
-impl std::fmt::Display for IterResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "compile={:6.1}ms  svg={:7}B  raster={:6.1}ms  defs={}",
-            self.compile_ms,
-            self.svg_bytes,
-            self.raster_ms,
-            if self.has_defs { "Y" } else { "N" },
-        )
-    }
-}
-
-fn print_summary(results: &[IterResult], label: &str) {
+fn print_summary(results: &[IterResult]) {
     eprintln!();
-    eprintln!("=== Summary: {label} ({} iterations) ===", results.len());
+    eprintln!("=== Summary ({} iterations) ===", results.len());
     if results.is_empty() {
         return;
     }
-    let avg = |f: fn(&IterResult) -> f64| -> f64 {
-        results.iter().map(f).sum::<f64>() / results.len() as f64
-    };
-    let sorted = |f: fn(&IterResult) -> f64| -> Vec<f64> {
+    // avg / p50 / p95 / min for a metric extracted from each iteration.
+    let stats = |f: fn(&IterResult) -> f64| {
         let mut v: Vec<f64> = results.iter().map(f).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        v
+        let avg = v.iter().sum::<f64>() / v.len() as f64;
+        let p95 = v[((v.len() as f64 * 0.95) as usize).min(v.len() - 1)];
+        (avg, v[v.len() / 2], p95, v[0])
     };
-    let p50 = |f: fn(&IterResult) -> f64| sorted(f)[results.len() / 2];
-    let p95 = |f: fn(&IterResult) -> f64| sorted(f)[(results.len() as f64 * 0.95) as usize];
-    let min =
-        |f: fn(&IterResult) -> f64| -> f64 { results.iter().map(f).fold(f64::INFINITY, f64::min) };
-
+    let metrics: [(&str, fn(&IterResult) -> f64); 3] = [
+        ("compile", |r| r.compile_ms),
+        ("raster", |r| r.raster_ms),
+        ("total", |r| r.compile_ms + r.raster_ms),
+    ];
     eprintln!(
         "              {:>8} {:>8} {:>8} {:>8}",
         "avg", "p50", "p95", "min"
     );
-    eprintln!(
-        "compile:      {:8.1} {:8.1} {:8.1} {:8.1} ms",
-        avg(|r| r.compile_ms),
-        p50(|r| r.compile_ms),
-        p95(|r| r.compile_ms),
-        min(|r| r.compile_ms),
-    );
-    eprintln!(
-        "raster:       {:8.1} {:8.1} {:8.1} {:8.1} ms",
-        avg(|r| r.raster_ms),
-        p50(|r| r.raster_ms),
-        p95(|r| r.raster_ms),
-        min(|r| r.raster_ms),
-    );
-    eprintln!(
-        "total:        {:8.1} {:8.1} {:8.1} {:8.1} ms",
-        avg(|r| r.compile_ms + r.raster_ms),
-        p50(|r| r.compile_ms + r.raster_ms),
-        p95(|r| r.compile_ms + r.raster_ms),
-        min(|r| r.compile_ms + r.raster_ms),
-    );
+    for (name, f) in metrics {
+        let (avg, p50, p95, min) = stats(f);
+        eprintln!("{name:<12}: {avg:8.1} {p50:8.1} {p95:8.1} {min:8.1} ms");
+    }
     let avg_svg_kb =
         results.iter().map(|r| r.svg_bytes as f64).sum::<f64>() / results.len() as f64 / 1024.0;
-    eprintln!("avg SVG size: {avg_svg_kb:.1} KB");
     let defs_count = results.iter().filter(|r| r.has_defs).count();
+    eprintln!("avg SVG size: {avg_svg_kb:.1} KB");
     eprintln!(
         "defs present: {defs_count}/{} frames ({:.0}%)",
         results.len(),
@@ -362,104 +270,6 @@ fn chop_heading(current: &mut String, original: &str) {
         *current = chars.into_iter().collect();
     }
 }
-
-// ===================================================================
-// loop — cold compile (no memoization)
-// ===================================================================
-
-fn bench_preview_loop(bin: &Path, doc_path: &Path) {
-    let iterations = bench_iters();
-    let svg_renderer = SvgRenderer::new(Arc::new(()));
-
-    eprintln!("=== Typst Preview Benchmark (cold compile) ===");
-    eprintln!("tinymist:   {}", bin.display());
-    eprintln!("document:   {}", doc_path.display());
-    eprintln!("iterations: {iterations}");
-    eprintln!();
-
-    let tmp_dir = std::env::temp_dir().join(format!("typst_bench_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    let src_dir = doc_path.parent().expect("document has no parent dir");
-    copy_dir_shallow(src_dir, &tmp_dir);
-    let work_doc = tmp_dir.join(doc_path.file_name().unwrap());
-    assert!(work_doc.exists(), "working copy not found: {work_doc:?}");
-
-    let original_content = std::fs::read_to_string(&work_doc).expect("read document");
-    let (heading_line_idx, heading_line) =
-        find_heading_line(&original_content).expect("document has no heading to mutate");
-    eprintln!("mutating line {heading_line_idx}: {heading_line}");
-
-    // Warmup compile.
-    let (initial_svg, initial_dur) =
-        compile_to_svg(bin, &work_doc, &tmp_dir).expect("initial compile");
-    eprintln!(
-        "initial compile: {:.1}ms, SVG: {} bytes",
-        initial_dur.as_secs_f64() * 1000.0,
-        initial_svg.len(),
-    );
-    let warmup = rasterize_full(&svg_renderer, &initial_svg);
-    eprintln!(
-        "warmup rasterize: {:.1}ms",
-        warmup.map(|d| d.as_secs_f64() * 1000.0).unwrap_or(-1.0),
-    );
-    eprintln!();
-
-    let mut results: Vec<IterResult> = Vec::with_capacity(iterations);
-    let mut current_heading = heading_line.clone();
-    let mut cached_defs: Option<String> = None;
-    cache_defs(&initial_svg, &mut cached_defs);
-
-    for i in 0..iterations {
-        chop_heading(&mut current_heading, &heading_line);
-        let new_content = replace_line(&original_content, heading_line_idx, &current_heading);
-        {
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(&work_doc)
-                .expect("open document for writing");
-            f.write_all(new_content.as_bytes()).expect("write document");
-            f.sync_all().expect("fsync document");
-        }
-
-        let (svg_bytes, compile_dur) = match compile_to_svg(bin, &work_doc, &tmp_dir) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("iter {i}: compile error: {e}");
-                break;
-            }
-        };
-
-        let has_defs = std::str::from_utf8(&svg_bytes)
-            .map(|s| s.contains(GLYPH_DEFS_OPEN))
-            .unwrap_or(false);
-
-        let mut raster_svg = svg_bytes.clone();
-        if has_defs {
-            cache_defs(&svg_bytes, &mut cached_defs);
-        } else if let Some(ref defs) = cached_defs {
-            raster_svg = inject_glyph_defs(&raster_svg, defs);
-        }
-
-        let raster_dur = rasterize_full(&svg_renderer, &raster_svg).unwrap_or(Duration::ZERO);
-
-        let result = IterResult {
-            compile_ms: compile_dur.as_secs_f64() * 1000.0,
-            svg_bytes: raster_svg.len(),
-            raster_ms: raster_dur.as_secs_f64() * 1000.0,
-            has_defs,
-        };
-        eprintln!("iter {i:2}: {result}");
-        results.push(result);
-    }
-
-    print_summary(&results, "cold compile");
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-}
-
-// ===================================================================
-// lsp — warm compile with comemo memoization
-// ===================================================================
 
 fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
     let iterations = bench_iters();
@@ -619,14 +429,20 @@ fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
 
             let raster_dur = rasterize_full(&svg_renderer, &raster_svg).unwrap_or(Duration::ZERO);
 
-            let result = IterResult {
-                compile_ms: compile_dur.as_secs_f64() * 1000.0,
-                svg_bytes: raster_svg.len(),
-                raster_ms: raster_dur.as_secs_f64() * 1000.0,
+            let compile_ms = compile_dur.as_secs_f64() * 1000.0;
+            let raster_ms = raster_dur.as_secs_f64() * 1000.0;
+            let svg_bytes = raster_svg.len();
+            eprintln!(
+                "iter {i:2}: compile={compile_ms:6.1}ms  svg={svg_bytes:7}B  \
+                 raster={raster_ms:6.1}ms  defs={}",
+                if has_defs { "Y" } else { "N" },
+            );
+            results.push(IterResult {
+                compile_ms,
+                svg_bytes,
+                raster_ms,
                 has_defs,
-            };
-            eprintln!("iter {i:2}: {result}");
-            results.push(result);
+            });
         }
 
         // Shutdown.
@@ -634,7 +450,7 @@ fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
         lsp.notify("exit", serde_json::json!(null));
         drop(lsp);
 
-        print_summary(&results, "LSP + comemo");
+        print_summary(&results);
     });
 
     let _ = std::fs::remove_dir_all(&tmp_dir);

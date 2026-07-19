@@ -1,7 +1,6 @@
 use anyhow::{Context as _, Result};
-use async_tungstenite::WebSocketStream;
-use async_tungstenite::tungstenite::Message;
 use async_tungstenite::tungstenite::client::IntoClientRequest as _;
+use async_tungstenite::{WebSocketStream, tungstenite::Message};
 use futures::{FutureExt as _, StreamExt as _};
 use gpui::{
     App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
@@ -14,12 +13,10 @@ use project::Project;
 use serde::Deserialize;
 use settings::Settings as _;
 use smol::net::TcpStream;
-use std::collections::HashSet;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use ui::WithScrollbar;
-use ui::prelude::*;
+use ui::{WithScrollbar, prelude::*};
 use workspace::item::Item;
 use workspace::{Pane, Workspace};
 
@@ -330,21 +327,15 @@ impl TypstPreviewView {
         // (e.g. if a workspace/didChangeConfiguration triggers a project
         // reload).  Retry a few times with a delay to let it settle.
         let max_attempts = 3;
-        for attempt in 0..max_attempts {
+        for attempt in 1..=max_attempts {
             match Self::try_connect_and_receive(&project, &source_buffer, this, cx).await {
                 Ok(()) => return Ok(()),
+                Err(err) if attempt == max_attempts => return Err(err),
                 Err(err) => {
-                    if attempt + 1 < max_attempts {
-                        log::warn!(
-                            "typst_viewer: attempt {}/{max_attempts} failed: {err:#}, retrying in 1s",
-                            attempt + 1,
-                        );
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_secs(1))
-                            .await;
-                    } else {
-                        return Err(err);
-                    }
+                    log::warn!(
+                        "typst_viewer: attempt {attempt}/{max_attempts} failed: {err:#}, retrying in 1s"
+                    );
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
                 }
             }
         }
@@ -499,32 +490,11 @@ impl TypstPreviewView {
                         let Some(svg_bytes) = latest.get(&page_index) else {
                             continue;
                         };
-                        let mut svg_bytes = svg_bytes.clone();
-
-                        // Glyph defs caching: first frame has full defs,
-                        // subsequent frames may have them stripped by the
-                        // server.  Inject cached defs when missing so the
-                        // SVG renderer can resolve all <use> references.
-                        let has_defs = std::str::from_utf8(&svg_bytes)
-                            .map(|s| s.contains(GLYPH_DEFS_OPEN))
-                            .unwrap_or(false);
-
-                        if has_defs {
-                            // Cache this page's defs for future frames
-                            // where the server strips them.
-                            let svg_str = String::from_utf8_lossy(&svg_bytes);
-                            if let Some(start) = svg_str.find(GLYPH_DEFS_OPEN) {
-                                if let Some(end_offset) = svg_str[start..].find(DEFS_CLOSE) {
-                                    let defs_end = start + end_offset + DEFS_CLOSE.len();
-                                    let defs = &svg_str[start..defs_end];
-                                    cached_glyph_defs.insert(page_index, defs.to_string());
-                                }
-                            }
-                        } else if let Some(defs) = cached_glyph_defs.get(&page_index) {
-                            svg_bytes = inject_glyph_defs(&svg_bytes, defs);
-                        } else {
-                            log::warn!("typst_viewer: page {page_index} — no defs and no cache");
-                        }
+                        let svg_bytes = resolve_glyph_defs(
+                            svg_bytes.clone(),
+                            page_index,
+                            &mut cached_glyph_defs,
+                        );
 
                         let raster_start = std::time::Instant::now();
                         let image_result = cx
@@ -548,17 +518,13 @@ impl TypstPreviewView {
                                      rasterized in {elapsed_ms:.0}ms"
                                 );
                                 this.update(cx, |this, cx| {
-                                    let pages = match &mut this.state {
-                                        PreviewState::Rendering { pages } => pages,
-                                        _ => {
-                                            this.state = PreviewState::Rendering {
-                                                pages: vec![None; latest_total],
-                                            };
-                                            match &mut this.state {
-                                                PreviewState::Rendering { pages } => pages,
-                                                _ => unreachable!(),
-                                            }
-                                        }
+                                    if !matches!(this.state, PreviewState::Rendering { .. }) {
+                                        this.state = PreviewState::Rendering {
+                                            pages: vec![None; latest_total],
+                                        };
+                                    }
+                                    let PreviewState::Rendering { pages } = &mut this.state else {
+                                        unreachable!("state was just set to Rendering");
                                     };
                                     pages.resize(latest_total, None);
                                     if page_index < pages.len() {
@@ -577,16 +543,8 @@ impl TypstPreviewView {
                     }
                 }
                 Ok(Message::Binary(data)) => {
-                    let magic = if data.len() >= 4 {
-                        format!(
-                            "{:02x} {:02x} {:02x} {:02x}",
-                            data[0], data[1], data[2], data[3]
-                        )
-                    } else {
-                        format!("{} bytes", data.len())
-                    };
                     log::debug!(
-                        "typst_viewer: received binary message ({} bytes, magic: {magic}), skipping",
+                        "typst_viewer: received binary message ({} bytes), skipping",
                         data.len()
                     );
                 }
@@ -660,53 +618,51 @@ impl TypstPreviewView {
             .and_then(|view| pane.index_for_item(&view))
     }
 
-    pub fn register(workspace: &mut Workspace, _window: &mut Window, _cx: &mut Context<Workspace>) {
-        workspace.register_action(move |workspace, _: &OpenPreview, window, cx| {
-            if let Some(buffer) = Self::resolve_active_item_as_typst_buffer(workspace, cx)
-                && Self::is_typst_file(&buffer, cx)
-            {
-                let project = workspace.project().clone();
-                let view = TypstPreviewView::new(buffer.clone(), project, window, cx);
-                workspace.active_pane().update(cx, |pane, cx| {
-                    if let Some(existing_idx) =
-                        Self::find_existing_preview_item_idx(pane, &buffer, cx)
-                    {
-                        pane.activate_item(existing_idx, true, true, window, cx);
-                    } else {
-                        pane.add_item(Box::new(view), true, true, None, window, cx);
-                    }
-                });
-                cx.notify();
+    /// Open (or focus an existing) preview for the active typst buffer. When
+    /// `to_the_side`, the preview goes in a split to the right and doesn't steal
+    /// focus; otherwise it opens (and activates) in the current pane.
+    fn open_preview(
+        workspace: &mut Workspace,
+        to_the_side: bool,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(buffer) = Self::resolve_active_item_as_typst_buffer(workspace, cx) else {
+            return;
+        };
+        let project = workspace.project().clone();
+        let view = TypstPreviewView::new(buffer.clone(), project, window, cx);
+        let pane = if to_the_side {
+            workspace
+                .find_pane_in_direction(workspace::SplitDirection::Right, cx)
+                .unwrap_or_else(|| {
+                    workspace.split_pane(
+                        workspace.active_pane().clone(),
+                        workspace::SplitDirection::Right,
+                        window,
+                        cx,
+                    )
+                })
+        } else {
+            workspace.active_pane().clone()
+        };
+        pane.update(cx, |pane, cx| {
+            if let Some(existing_idx) = Self::find_existing_preview_item_idx(pane, &buffer, cx) {
+                pane.activate_item(existing_idx, true, true, window, cx);
+            } else {
+                let activate = !to_the_side;
+                pane.add_item(Box::new(view), activate, activate, None, window, cx);
             }
         });
+        cx.notify();
+    }
 
-        workspace.register_action(move |workspace, _: &OpenPreviewToTheSide, window, cx| {
-            if let Some(buffer) = Self::resolve_active_item_as_typst_buffer(workspace, cx)
-                && Self::is_typst_file(&buffer, cx)
-            {
-                let project = workspace.project().clone();
-                let view = TypstPreviewView::new(buffer.clone(), project, window, cx);
-                let pane = workspace
-                    .find_pane_in_direction(workspace::SplitDirection::Right, cx)
-                    .unwrap_or_else(|| {
-                        workspace.split_pane(
-                            workspace.active_pane().clone(),
-                            workspace::SplitDirection::Right,
-                            window,
-                            cx,
-                        )
-                    });
-                pane.update(cx, |pane, cx| {
-                    if let Some(existing_idx) =
-                        Self::find_existing_preview_item_idx(pane, &buffer, cx)
-                    {
-                        pane.activate_item(existing_idx, true, true, window, cx);
-                    } else {
-                        pane.add_item(Box::new(view), false, false, None, window, cx);
-                    }
-                });
-                cx.notify();
-            }
+    pub fn register(workspace: &mut Workspace, _window: &mut Window, _cx: &mut Context<Workspace>) {
+        workspace.register_action(|workspace, _: &OpenPreview, window, cx| {
+            Self::open_preview(workspace, false, window, cx);
+        });
+        workspace.register_action(|workspace, _: &OpenPreviewToTheSide, window, cx| {
+            Self::open_preview(workspace, true, window, cx);
         });
     }
 }
@@ -861,6 +817,37 @@ pub fn parse_page_header(text: &str) -> Option<(PageHeader, &str)> {
     let index: usize = index_str.parse().ok()?;
     let total: usize = total_str.parse().ok()?;
     Some((PageHeader { index, total }, svg))
+}
+
+/// Ensure `svg_bytes` carries glyph defs so `<use>` references resolve.
+///
+/// The first frame for a page carries full defs, which we cache; later frames
+/// have them stripped by the server, so we inject the cached copy back in.
+fn resolve_glyph_defs(
+    svg_bytes: Vec<u8>,
+    page_index: usize,
+    cache: &mut HashMap<usize, String>,
+) -> Vec<u8> {
+    let defs = {
+        let svg_str = String::from_utf8_lossy(&svg_bytes);
+        svg_str.find(GLYPH_DEFS_OPEN).and_then(|start| {
+            let end = start + svg_str[start..].find(DEFS_CLOSE)? + DEFS_CLOSE.len();
+            Some(svg_str[start..end].to_string())
+        })
+    };
+    match defs {
+        Some(defs) => {
+            cache.insert(page_index, defs);
+            svg_bytes
+        }
+        None => match cache.get(&page_index) {
+            Some(defs) => inject_glyph_defs(&svg_bytes, defs),
+            None => {
+                log::warn!("typst_viewer: page {page_index} — no defs and no cache");
+                svg_bytes
+            }
+        },
+    }
 }
 
 /// Insert cached glyph defs into an SVG that had them stripped by the server.
