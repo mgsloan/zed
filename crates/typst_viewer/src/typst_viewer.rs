@@ -29,13 +29,12 @@ pub use zed_actions::preview::typst::{OpenPreview, OpenPreviewToTheSide};
 pub const TINYMIST_SERVER_NAME: LanguageServerName = LanguageServerName::new_static("tinymist");
 
 /// Response from tinymist's `doStartPreview` / `startPreview` command.
+///
+/// tinymist also returns `staticServerPort`/`staticServerAddr` and `isPrimary`, but these are not needed.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartPreviewResponse {
-    pub static_server_port: Option<u16>,
-    pub static_server_addr: Option<String>,
     pub data_plane_port: Option<u16>,
-    pub is_primary: bool,
 }
 
 /// tinymist sends document outline notifications that Zed doesn't consume.
