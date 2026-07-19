@@ -154,10 +154,9 @@ pub async fn start_preview_via_lsp(
         .into_response()
         .context("tinymist.doStartPreview request failed")?;
 
-    let response: StartPreviewResponse = serde_json::from_value(
-        result.context("tinymist.doStartPreview returned null")?,
-    )
-    .context("failed to parse StartPreviewResponse")?;
+    let response: StartPreviewResponse =
+        serde_json::from_value(result.context("tinymist.doStartPreview returned null")?)
+            .context("failed to parse StartPreviewResponse")?;
 
     log::info!("typst_viewer: StartPreviewResponse: {response:?}");
 

@@ -8,27 +8,29 @@ use gpui::{
     App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
     RenderImage, ScrollHandle, SharedString, Task, Window,
 };
-use image::Frame;
 use language::Buffer;
 use multi_buffer::MultiBuffer;
 use project::Project;
 use settings::Settings as _;
-use smallvec::SmallVec;
-use ui::prelude::*;
 use ui::WithScrollbar;
+use ui::prelude::*;
 use workspace::item::Item;
 use workspace::{Pane, Workspace};
 
 use crate::svg_stream;
 use crate::{OpenPreview, OpenPreviewToTheSide};
 
-
-
 enum PreviewState {
     Connecting,
-    Rendering { pages: Vec<Option<Arc<RenderImage>>> },
-    Disconnected { reason: String },
-    Error { message: String },
+    Rendering {
+        pages: Vec<Option<Arc<RenderImage>>>,
+    },
+    Disconnected {
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub struct TypstPreviewView {
@@ -93,28 +95,26 @@ impl TypstPreviewView {
         source_buffer: &Option<Entity<Buffer>>,
         cx: &mut gpui::AsyncApp,
     ) -> anyhow::Result<(String, Vec<lsp::Subscription>)> {
-        let (server, request_timeout, entry_path) = project
-            .read_with(cx, |project, cx| {
-                let buffer = source_buffer.as_ref().map(|b| b.read(cx));
-                let server_id =
-                    crate::find_tinymist_server(project, buffer.as_deref(), cx)
-                        .context("tinymist language server not found")?;
-                let server = project
-                    .lsp_store()
-                    .read(cx)
-                    .language_server_for_id(server_id)
-                    .context("tinymist server not running")?;
-                let request_timeout = project::project_settings::ProjectSettings::get_global(cx)
-                    .global_lsp_settings
-                    .get_request_timeout();
-                let entry_path = source_buffer
-                    .as_ref()
-                    .and_then(|b| b.read(cx).file())
-                    .and_then(|file| file.as_local())
-                    .map(|file| file.abs_path(cx))
-                    .context("buffer has no file path")?;
-                anyhow::Ok((server, request_timeout, entry_path))
-            })?;
+        let (server, request_timeout, entry_path) = project.read_with(cx, |project, cx| {
+            let buffer = source_buffer.as_ref().map(|b| b.read(cx));
+            let server_id = crate::find_tinymist_server(project, buffer.as_deref(), cx)
+                .context("tinymist language server not found")?;
+            let server = project
+                .lsp_store()
+                .read(cx)
+                .language_server_for_id(server_id)
+                .context("tinymist server not running")?;
+            let request_timeout = project::project_settings::ProjectSettings::get_global(cx)
+                .global_lsp_settings
+                .get_request_timeout();
+            let entry_path = source_buffer
+                .as_ref()
+                .and_then(|b| b.read(cx).file())
+                .and_then(|file| file.as_local())
+                .map(|file| file.abs_path(cx))
+                .context("buffer has no file path")?;
+            anyhow::Ok((server, request_timeout, entry_path))
+        })?;
 
         // Suppress "unhandled notification" log spam from tinymist.
         // Returns None if already registered for this server (safe on re-open).
@@ -161,17 +161,19 @@ impl TypstPreviewView {
         this: &gpui::WeakEntity<Self>,
         cx: &mut gpui::AsyncApp,
     ) -> anyhow::Result<()> {
-        let (url, lsp_subscriptions) = Self::request_preview_url(project, source_buffer, cx)
-            .await?;
+        let (url, lsp_subscriptions) =
+            Self::request_preview_url(project, source_buffer, cx).await?;
 
         if !lsp_subscriptions.is_empty() {
             this.update(cx, |this, _cx| {
                 this._lsp_subscriptions.extend(lsp_subscriptions);
-            }).ok();
+            })
+            .ok();
         }
 
         log::info!("typst_viewer: connecting to LSP-provided preview at {url}");
-        let mut ws = svg_stream::connect(&url).await
+        let mut ws = svg_stream::connect(&url)
+            .await
             .with_context(|| format!("failed to connect to preview server at {url}"))?;
 
         // tinymist expects the client to send "current" to trigger a full render.
@@ -180,8 +182,6 @@ impl TypstPreviewView {
 
         Self::receive_loop(&mut ws, this, cx).await
     }
-
-
 
     /// Parse a single WebSocket text message into page metadata + SVG bytes,
     /// or return None for non-SVG messages (which are logged and skipped).
@@ -201,9 +201,7 @@ impl TypstPreviewView {
             };
 
         if !svg_text.contains("<svg") {
-            log::warn!(
-                "typst_viewer: page {page_index}/{page_total} has no <svg tag, skipping"
-            );
+            log::warn!("typst_viewer: page {page_index}/{page_total} has no <svg tag, skipping");
             return None;
         }
 
@@ -222,8 +220,7 @@ impl TypstPreviewView {
             match msg_result {
                 Ok(Message::Text(text)) => {
                     // --- Phase 1: Parse the triggering message ---
-                    let Some((page_index, page_total, svg_bytes)) =
-                        Self::parse_svg_message(&text)
+                    let Some((page_index, page_total, svg_bytes)) = Self::parse_svg_message(&text)
                     else {
                         continue;
                     };
@@ -240,9 +237,7 @@ impl TypstPreviewView {
                     loop {
                         match ws.next().now_or_never() {
                             Some(Some(Ok(Message::Text(newer)))) => {
-                                if let Some((pi, pt, bytes)) =
-                                    Self::parse_svg_message(&newer)
-                                {
+                                if let Some((pi, pt, bytes)) = Self::parse_svg_message(&newer) {
                                     // If this starts a newer batch (page 0
                                     // with a possibly different total), clear
                                     // stale pages from the previous batch.
@@ -270,29 +265,34 @@ impl TypstPreviewView {
                     // --- Phase 2: Rasterize pages, visible first ---
                     // Read the current scroll offset to prioritise the page
                     // the user is actually looking at.
-                    let visible_page = this.update(cx, |this, _cx| {
-                        let scroll_y: f32 = this.scroll_handle.offset().y.abs().into();
-                        // Each page is roughly the same height.  Estimate
-                        // which page index is at the current scroll position.
-                        let page_count = match &this.state {
-                            PreviewState::Rendering { pages } => pages.len().max(1),
-                            _ => latest_total,
-                        };
-                        // Use the first rendered page to get the height,
-                        // or fall back to a reasonable default.
-                        let page_height = match &this.state {
-                            PreviewState::Rendering { pages } => {
-                                pages.iter().find_map(|p| {
-                                    let img = p.as_ref()?;
-                                    let h = img.size(0).height.0 as f32 / 2.0;
-                                    Some(h + 12.0) // display_h + page_gap
-                                }).unwrap_or(1200.0)
-                            }
-                            _ => 1200.0,
-                        };
-                        let idx = (scroll_y / page_height) as usize;
-                        idx.min(page_count.saturating_sub(1))
-                    }).unwrap_or(0);
+                    let visible_page = this
+                        .update(cx, |this, _cx| {
+                            let scroll_y: f32 = this.scroll_handle.offset().y.abs().into();
+                            // Each page is roughly the same height.  Estimate
+                            // which page index is at the current scroll position.
+                            let page_count = match &this.state {
+                                PreviewState::Rendering { pages } => pages.len().max(1),
+                                _ => latest_total,
+                            };
+                            // Use the first rendered page to get the height,
+                            // or fall back to a reasonable default.
+                            let page_height = match &this.state {
+                                PreviewState::Rendering { pages } => {
+                                    pages
+                                        .iter()
+                                        .find_map(|p| {
+                                            let img = p.as_ref()?;
+                                            let h = img.size(0).height.0 as f32 / 2.0;
+                                            Some(h + 12.0) // display_h + page_gap
+                                        })
+                                        .unwrap_or(1200.0)
+                                }
+                                _ => 1200.0,
+                            };
+                            let idx = (scroll_y / page_height) as usize;
+                            idx.min(page_count.saturating_sub(1))
+                        })
+                        .unwrap_or(0);
 
                     // Sort page indices: visible page first, then nearest
                     // neighbours expanding outward, then the rest.
@@ -303,7 +303,9 @@ impl TypstPreviewView {
                     });
 
                     for &page_index in &page_order {
-                        let Some(svg_bytes) = latest.get(&page_index) else { continue };
+                        let Some(svg_bytes) = latest.get(&page_index) else {
+                            continue;
+                        };
                         let mut svg_bytes = svg_bytes.clone();
 
                         // Glyph defs caching: first frame has full defs,
@@ -328,9 +330,7 @@ impl TypstPreviewView {
                         } else if let Some(defs) = cached_glyph_defs.get(&page_index) {
                             svg_bytes = inject_glyph_defs(&svg_bytes, defs);
                         } else {
-                            log::warn!(
-                                "typst_viewer: page {page_index} — no defs and no cache"
-                            );
+                            log::warn!("typst_viewer: page {page_index} — no defs and no cache");
                         }
 
                         let raster_start = std::time::Instant::now();
@@ -467,11 +467,7 @@ impl TypstPreviewView {
             .and_then(|view| pane.index_for_item(&view))
     }
 
-    pub fn register(
-        workspace: &mut Workspace,
-        _window: &mut Window,
-        _cx: &mut Context<Workspace>,
-    ) {
+    pub fn register(workspace: &mut Workspace, _window: &mut Window, _cx: &mut Context<Workspace>) {
         workspace.register_action(move |workspace, _: &OpenPreview, window, cx| {
             if let Some(buffer) = Self::resolve_active_item_as_typst_buffer(workspace, cx)
                 && Self::is_typst_file(&buffer, cx)
@@ -550,20 +546,22 @@ impl Render for TypstPreviewView {
                             let image_size = image.size(0);
                             let image_w = image_size.width.0 as f32;
                             let image_h = image_size.height.0 as f32;
-                            let aspect = if image_w > 0.0 { image_h / image_w } else { 1.0 };
+                            let aspect = if image_w > 0.0 {
+                                image_h / image_w
+                            } else {
+                                1.0
+                            };
                             let display_w = image_w / 2.0;
                             let display_h = image_w / 2.0 * aspect;
 
                             pages_column = pages_column.child(
-                                div()
-                                    .pb(gpui::px(page_gap))
-                                    .child(
-                                        gpui::img(gpui::ImageSource::Render(image.clone()))
-                                            .id(ElementId::Integer(image.id.0 as u64))
-                                            .debug_selector(|| "TYPST_PREVIEW_IMG".into())
-                                            .w(gpui::px(display_w))
-                                            .h(gpui::px(display_h)),
-                                    )
+                                div().pb(gpui::px(page_gap)).child(
+                                    gpui::img(gpui::ImageSource::Render(image.clone()))
+                                        .id(ElementId::Integer(image.id.0 as u64))
+                                        .debug_selector(|| "TYPST_PREVIEW_IMG".into())
+                                        .w(gpui::px(display_w))
+                                        .h(gpui::px(display_h)),
+                                ),
                             );
                         }
                         None => {
@@ -574,7 +572,7 @@ impl Render for TypstPreviewView {
                                     .items_center()
                                     .justify_center()
                                     .h(gpui::px(200.0))
-                                    .child(SharedString::from(format!("Loading page {}…", i + 1)))
+                                    .child(SharedString::from(format!("Loading page {}…", i + 1))),
                             );
                         }
                     }
@@ -702,11 +700,19 @@ mod layout_tests {
     }
 
     impl gpui::Render for TestImageView {
-        fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
             let image_size = self.image.size(0);
             let image_w = image_size.width.0 as f32;
             let image_h = image_size.height.0 as f32;
-            let aspect = if image_w > 0.0 { image_h / image_w } else { 1.0 };
+            let aspect = if image_w > 0.0 {
+                image_h / image_w
+            } else {
+                1.0
+            };
             let display_w = px(image_w / 2.0);
             let display_h = px(image_w / 2.0 * aspect);
 
@@ -730,11 +736,10 @@ mod layout_tests {
     fn make_test_image(width: u32, height: u32, scale: f32) -> Arc<RenderImage> {
         // Create a minimal BGRA pixmap.
         let data = vec![128u8; (width * height * 4) as usize];
-        let buffer = image::ImageBuffer::from_raw(width, height, data)
-            .expect("buffer size mismatch");
+        let buffer =
+            image::ImageBuffer::from_raw(width, height, data).expect("buffer size mismatch");
         Arc::new(
-            RenderImage::new(SmallVec::from_elem(Frame::new(buffer), 1))
-                .with_scale_factor(scale),
+            RenderImage::new(SmallVec::from_elem(Frame::new(buffer), 1)).with_scale_factor(scale),
         )
     }
 
@@ -782,14 +787,18 @@ mod layout_tests {
 
         // The display bounds must be identical.
         assert_eq!(
-            bounds1.size.width.as_f32(), bounds2.size.width.as_f32(),
+            bounds1.size.width.as_f32(),
+            bounds2.size.width.as_f32(),
             "Width changed between image updates: {} -> {}",
-            bounds1.size.width.as_f32(), bounds2.size.width.as_f32(),
+            bounds1.size.width.as_f32(),
+            bounds2.size.width.as_f32(),
         );
         assert_eq!(
-            bounds1.size.height.as_f32(), bounds2.size.height.as_f32(),
+            bounds1.size.height.as_f32(),
+            bounds2.size.height.as_f32(),
             "Height changed between image updates: {} -> {}",
-            bounds1.size.height.as_f32(), bounds2.size.height.as_f32(),
+            bounds1.size.height.as_f32(),
+            bounds2.size.height.as_f32(),
         );
     }
 
@@ -797,9 +806,7 @@ mod layout_tests {
     async fn test_image_display_size_matches_expected_dimensions(cx: &mut TestAppContext) {
         // 1119x1588 pixels at 2x scale → 559.5x794 display points
         let image = make_test_image(1119, 1588, 2.0);
-        let (_view, cx) = cx.add_window_view(|_window, _cx| TestImageView {
-            image,
-        });
+        let (_view, cx) = cx.add_window_view(|_window, _cx| TestImageView { image });
 
         let bounds = cx.debug_bounds("TEST_IMG").expect("TEST_IMG should exist");
 

@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
-use async_tungstenite::tungstenite::client::IntoClientRequest;
 use async_tungstenite::tungstenite::Message;
+use async_tungstenite::tungstenite::client::IntoClientRequest;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,9 @@ pub type PreviewSocket = async_tungstenite::WebSocketStream<smol::net::TcpStream
 /// `.split()` to get independent read/write halves.
 pub async fn connect(url: &str) -> Result<PreviewSocket> {
     let parsed_url = url::Url::parse(url).context("parsing WebSocket URL")?;
-    let host = parsed_url.host_str().context("WebSocket URL missing host")?;
+    let host = parsed_url
+        .host_str()
+        .context("WebSocket URL missing host")?;
     let port = parsed_url.port().unwrap_or(80);
     let addr = format!("{host}:{port}");
 
@@ -38,7 +40,9 @@ pub async fn connect(url: &str) -> Result<PreviewSocket> {
         .await
         .with_context(|| format!("TCP connect to {addr}"))?;
 
-    let mut request = url.into_client_request().context("building WebSocket request")?;
+    let mut request = url
+        .into_client_request()
+        .context("building WebSocket request")?;
     request.headers_mut().insert(
         "Origin",
         format!("http://{addr}")
@@ -86,7 +90,9 @@ pub async fn start_mock_server() -> Result<(String, smol::Task<()>)> {
     let listener = smol::net::TcpListener::bind("127.0.0.1:0")
         .await
         .context("binding mock server")?;
-    let addr = listener.local_addr().context("getting mock server address")?;
+    let addr = listener
+        .local_addr()
+        .context("getting mock server address")?;
     let url = format!("ws://{addr}");
 
     log::info!("typst_viewer: mock SVG server listening on {addr}");
@@ -189,8 +195,11 @@ pub fn mock_svg_multipage(page_count: usize) -> Vec<String> {
 /// Accepts a single client connection (sufficient for testing).
 ///
 /// Returns `(ws_url, server_task, update_sender)`.
-pub async fn start_live_mock_server(
-) -> Result<(String, smol::Task<()>, futures::channel::mpsc::UnboundedSender<String>)> {
+pub async fn start_live_mock_server() -> Result<(
+    String,
+    smol::Task<()>,
+    futures::channel::mpsc::UnboundedSender<String>,
+)> {
     let listener = smol::net::TcpListener::bind("127.0.0.1:0")
         .await
         .context("binding live mock server")?;
@@ -539,8 +548,14 @@ mod tests {
 
                 // The SVG body after the header should be valid.
                 let svg = &msg[expected_prefix.len()..];
-                assert!(svg.starts_with("<svg"), "page {i} body should start with <svg");
-                assert!(svg.ends_with("</svg>"), "page {i} body should end with </svg>");
+                assert!(
+                    svg.starts_with("<svg"),
+                    "page {i} body should start with <svg"
+                );
+                assert!(
+                    svg.ends_with("</svg>"),
+                    "page {i} body should end with </svg>"
+                );
                 assert!(
                     svg.contains(&format!("Page {} of {count}", i + 1)),
                     "page {i} should contain distinguishing text"
@@ -571,7 +586,8 @@ mod tests {
 
     #[test]
     fn inject_glyph_defs_inserts_after_svg_tag() {
-        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect/></svg>"#;
+        let svg =
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect/></svg>"#;
         let defs = r#"<defs id="glyph"><symbol id="g1"><path d="M0 0"/></symbol></defs>"#;
         let result = inject_glyph_defs(svg, defs);
         let result_str = String::from_utf8(result).expect("valid utf8");

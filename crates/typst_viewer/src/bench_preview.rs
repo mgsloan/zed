@@ -72,7 +72,9 @@ mod tests {
         if let Some(home) = home_dir() {
             let candidates = [
                 home.join("Documents/Law/David/deepdives.typ"),
-                home.join("Documents/Law/FoL/Assignments/1.2 S26 NASA/newton-principia-acoustica.typ"),
+                home.join(
+                    "Documents/Law/FoL/Assignments/1.2 S26 NASA/newton-principia-acoustica.typ",
+                ),
             ];
             for c in &candidates {
                 if c.exists() {
@@ -203,9 +205,7 @@ mod tests {
     }
 
     /// Receive the next SVG from the WebSocket, skipping binary/non-SVG messages.
-    async fn receive_ws_svg(
-        ws: &mut crate::svg_stream::PreviewSocket,
-    ) -> anyhow::Result<Vec<u8>> {
+    async fn receive_ws_svg(ws: &mut crate::svg_stream::PreviewSocket) -> anyhow::Result<Vec<u8>> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if Instant::now() > deadline {
@@ -277,16 +277,23 @@ mod tests {
             results.iter().map(f).fold(f64::INFINITY, f64::min)
         };
 
-        eprintln!("              {:>8} {:>8} {:>8} {:>8}", "avg", "p50", "p95", "min");
+        eprintln!(
+            "              {:>8} {:>8} {:>8} {:>8}",
+            "avg", "p50", "p95", "min"
+        );
         eprintln!(
             "compile:      {:8.1} {:8.1} {:8.1} {:8.1} ms",
-            avg(|r| r.compile_ms), p50(|r| r.compile_ms),
-            p95(|r| r.compile_ms), min(|r| r.compile_ms),
+            avg(|r| r.compile_ms),
+            p50(|r| r.compile_ms),
+            p95(|r| r.compile_ms),
+            min(|r| r.compile_ms),
         );
         eprintln!(
             "raster:       {:8.1} {:8.1} {:8.1} {:8.1} ms",
-            avg(|r| r.raster_ms), p50(|r| r.raster_ms),
-            p95(|r| r.raster_ms), min(|r| r.raster_ms),
+            avg(|r| r.raster_ms),
+            p50(|r| r.raster_ms),
+            p95(|r| r.raster_ms),
+            min(|r| r.raster_ms),
         );
         eprintln!(
             "total:        {:8.1} {:8.1} {:8.1} {:8.1} ms",
@@ -295,9 +302,8 @@ mod tests {
             p95(|r| r.compile_ms + r.raster_ms),
             min(|r| r.compile_ms + r.raster_ms),
         );
-        let avg_svg_kb = results.iter().map(|r| r.svg_bytes as f64).sum::<f64>()
-            / results.len() as f64
-            / 1024.0;
+        let avg_svg_kb =
+            results.iter().map(|r| r.svg_bytes as f64).sum::<f64>() / results.len() as f64 / 1024.0;
         eprintln!("avg SVG size: {avg_svg_kb:.1} KB");
         let defs_count = results.iter().filter(|r| r.has_defs).count();
         eprintln!(
@@ -333,7 +339,7 @@ mod tests {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(10usize);
-        let scale = 2.0_f32;
+        let svg_renderer = gpui::SvgRenderer::new(std::sync::Arc::new(()));
         let bin = tinymist_bin();
         let doc_path = find_test_document();
 
@@ -363,7 +369,7 @@ mod tests {
             initial_dur.as_secs_f64() * 1000.0,
             initial_svg.len(),
         );
-        let warmup = rasterize_full(&initial_svg, scale);
+        let warmup = rasterize_full(&svg_renderer, &initial_svg);
         eprintln!(
             "warmup rasterize: {:.1}ms",
             warmup.map(|d| d.as_secs_f64() * 1000.0).unwrap_or(-1.0),
@@ -407,7 +413,7 @@ mod tests {
                 raster_svg = inject_glyph_defs(&raster_svg, defs);
             }
 
-            let raster_dur = rasterize_full(&raster_svg, scale).unwrap_or(Duration::ZERO);
+            let raster_dur = rasterize_full(&svg_renderer, &raster_svg).unwrap_or(Duration::ZERO);
 
             let result = IterResult {
                 compile_ms: compile_dur.as_secs_f64() * 1000.0,
@@ -434,7 +440,7 @@ mod tests {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(10usize);
-        let scale = 2.0_f32;
+        let svg_renderer = gpui::SvgRenderer::new(std::sync::Arc::new(()));
         let bin = tinymist_bin();
         let doc_path = find_test_document();
 
@@ -463,49 +469,65 @@ mod tests {
             let mut lsp = LspProcess::start(&bin, &tmp_dir);
 
             // Initialize LSP.
-            let init_resp = lsp.request(1, "initialize", serde_json::json!({
-                "processId": std::process::id(),
-                "rootUri": root_uri,
-                "capabilities": {
-                    "textDocument": {
-                        "synchronization": {
-                            "didSave": true,
-                            "dynamicRegistration": false
+            let init_resp = lsp.request(
+                1,
+                "initialize",
+                serde_json::json!({
+                    "processId": std::process::id(),
+                    "rootUri": root_uri,
+                    "capabilities": {
+                        "textDocument": {
+                            "synchronization": {
+                                "didSave": true,
+                                "dynamicRegistration": false
+                            }
                         }
+                    },
+                    "initializationOptions": {
+                        "formatterMode": "disable"
                     }
-                },
-                "initializationOptions": {
-                    "formatterMode": "disable"
-                }
-            }));
-            assert!(init_resp.get("result").is_some(), "LSP init failed: {init_resp:?}");
+                }),
+            );
+            assert!(
+                init_resp.get("result").is_some(),
+                "LSP init failed: {init_resp:?}"
+            );
             lsp.notify("initialized", serde_json::json!({}));
 
             // Open the document.
-            lsp.notify("textDocument/didOpen", serde_json::json!({
-                "textDocument": {
-                    "uri": doc_uri,
-                    "languageId": "typst",
-                    "version": 1,
-                    "text": original_content,
-                }
-            }));
+            lsp.notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": doc_uri,
+                        "languageId": "typst",
+                        "version": 1,
+                        "text": original_content,
+                    }
+                }),
+            );
 
             smol::Timer::after(Duration::from_millis(500)).await;
 
             // Start preview.
-            let preview_resp = lsp.request(2, "workspace/executeCommand", serde_json::json!({
-                "command": "tinymist.doStartPreview",
-                "arguments": [[
-                    "--server-svg",
-                    "--strip-svg-glyph-defs",
-                    "--data-plane-host=127.0.0.1:0",
-                    work_doc.to_str().unwrap()
-                ]]
-            }));
-            let preview_result = preview_resp.get("result")
+            let preview_resp = lsp.request(
+                2,
+                "workspace/executeCommand",
+                serde_json::json!({
+                    "command": "tinymist.doStartPreview",
+                    "arguments": [[
+                        "--server-svg",
+                        "--strip-svg-glyph-defs",
+                        "--data-plane-host=127.0.0.1:0",
+                        work_doc.to_str().unwrap()
+                    ]]
+                }),
+            );
+            let preview_result = preview_resp
+                .get("result")
                 .expect("doStartPreview returned no result");
-            let data_plane_port = preview_result.get("dataPlanePort")
+            let data_plane_port = preview_result
+                .get("dataPlanePort")
                 .and_then(|v| v.as_u64())
                 .expect("no dataPlanePort in response");
             eprintln!("preview data plane port: {data_plane_port}");
@@ -517,7 +539,9 @@ mod tests {
                 .expect("WebSocket connect");
 
             use futures::SinkExt;
-            ws.send(Message::text("current")).await.expect("send current");
+            ws.send(Message::text("current"))
+                .await
+                .expect("send current");
 
             let initial_svg = receive_ws_svg(&mut ws).await.expect("receive initial SVG");
             eprintln!("initial SVG: {} bytes", initial_svg.len());
@@ -525,7 +549,7 @@ mod tests {
             let mut cached_defs: Option<String> = None;
             cache_defs(&initial_svg, &mut cached_defs);
 
-            let warmup = rasterize_full(&initial_svg, scale);
+            let warmup = rasterize_full(&svg_renderer, &initial_svg);
             eprintln!(
                 "warmup rasterize: {:.1}ms",
                 warmup.map(|d| d.as_secs_f64() * 1000.0).unwrap_or(-1.0),
@@ -543,18 +567,22 @@ mod tests {
                     replace_line(&original_content, heading_line_idx, &current_heading);
 
                 let change_start = Instant::now();
-                lsp.notify("textDocument/didChange", serde_json::json!({
-                    "textDocument": {
-                        "uri": doc_uri,
-                        "version": version,
-                    },
-                    "contentChanges": [{
-                        "text": new_content,
-                    }]
-                }));
+                lsp.notify(
+                    "textDocument/didChange",
+                    serde_json::json!({
+                        "textDocument": {
+                            "uri": doc_uri,
+                            "version": version,
+                        },
+                        "contentChanges": [{
+                            "text": new_content,
+                        }]
+                    }),
+                );
                 version += 1;
 
-                let svg_bytes = receive_ws_svg(&mut ws).await
+                let svg_bytes = receive_ws_svg(&mut ws)
+                    .await
                     .unwrap_or_else(|e| panic!("iter {i}: SVG receive error: {e}"));
                 let compile_dur = change_start.elapsed();
 
@@ -569,7 +597,8 @@ mod tests {
                     raster_svg = inject_glyph_defs(&raster_svg, defs);
                 }
 
-                let raster_dur = rasterize_full(&raster_svg, scale).unwrap_or(Duration::ZERO);
+                let raster_dur =
+                    rasterize_full(&svg_renderer, &raster_svg).unwrap_or(Duration::ZERO);
 
                 let result = IterResult {
                     compile_ms: compile_dur.as_secs_f64() * 1000.0,
@@ -629,13 +658,19 @@ mod tests {
                 }
             });
 
-            Self { child, stdin, stdout }
+            Self {
+                child,
+                stdin,
+                stdout,
+            }
         }
 
         fn send_raw(&mut self, msg: &serde_json::Value) {
             let body = serde_json::to_string(msg).expect("serialize JSON-RPC");
             let header = format!("Content-Length: {}\r\n\r\n", body.len());
-            self.stdin.write_all(header.as_bytes()).expect("write header");
+            self.stdin
+                .write_all(header.as_bytes())
+                .expect("write header");
             self.stdin.write_all(body.as_bytes()).expect("write body");
             self.stdin.flush().expect("flush stdin");
         }
