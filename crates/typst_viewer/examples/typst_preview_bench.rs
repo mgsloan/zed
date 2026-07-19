@@ -43,7 +43,7 @@ use futures::StreamExt as _;
 use gpui::SvgRenderer;
 
 use typst_viewer::svg_stream::{self, PreviewSocket};
-use typst_viewer::{inject_glyph_defs, parse_page_header, DEFS_CLOSE, GLYPH_DEFS_OPEN};
+use typst_viewer::{DEFS_CLOSE, GLYPH_DEFS_OPEN, inject_glyph_defs, parse_page_header};
 
 fn main() {
     let which = std::env::args().nth(1);
@@ -311,7 +311,10 @@ fn print_summary(results: &[IterResult], label: &str) {
     let min =
         |f: fn(&IterResult) -> f64| -> f64 { results.iter().map(f).fold(f64::INFINITY, f64::min) };
 
-    eprintln!("              {:>8} {:>8} {:>8} {:>8}", "avg", "p50", "p95", "min");
+    eprintln!(
+        "              {:>8} {:>8} {:>8} {:>8}",
+        "avg", "p50", "p95", "min"
+    );
     eprintln!(
         "compile:      {:8.1} {:8.1} {:8.1} {:8.1} ms",
         avg(|r| r.compile_ms),
@@ -505,7 +508,10 @@ fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
                 }
             }),
         );
-        assert!(init_resp.get("result").is_some(), "LSP init failed: {init_resp:?}");
+        assert!(
+            init_resp.get("result").is_some(),
+            "LSP init failed: {init_resp:?}"
+        );
         lsp.notify("initialized", serde_json::json!({}));
 
         // Open the document.
@@ -680,7 +686,9 @@ impl LspProcess {
     fn send_raw(&mut self, msg: &serde_json::Value) {
         let body = serde_json::to_string(msg).expect("serialize JSON-RPC");
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
-        self.stdin.write_all(header.as_bytes()).expect("write header");
+        self.stdin
+            .write_all(header.as_bytes())
+            .expect("write header");
         self.stdin.write_all(body.as_bytes()).expect("write body");
         self.stdin.flush().expect("flush stdin");
     }
