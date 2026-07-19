@@ -97,7 +97,7 @@ impl TypstPreviewView {
     ) -> anyhow::Result<(String, Vec<lsp::Subscription>)> {
         let (server, request_timeout, entry_path) = project.read_with(cx, |project, cx| {
             let buffer = source_buffer.as_ref().map(|b| b.read(cx));
-            let server_id = crate::find_tinymist_server(project, buffer.as_deref(), cx)
+            let server_id = crate::find_tinymist_server(project, buffer, cx)
                 .context("tinymist language server not found")?;
             let server = project
                 .lsp_store()
@@ -145,7 +145,9 @@ impl TypstPreviewView {
                             "typst_viewer: attempt {}/{max_attempts} failed: {err:#}, retrying in 1s",
                             attempt + 1,
                         );
-                        smol::Timer::after(std::time::Duration::from_secs(1)).await;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(1))
+                            .await;
                     } else {
                         return Err(err);
                     }
@@ -234,24 +236,21 @@ impl TypstPreviewView {
                     latest.insert(page_index, svg_bytes);
                     let mut skipped = 0u64;
 
-                    loop {
-                        match ws.next().now_or_never() {
-                            Some(Some(Ok(Message::Text(newer)))) => {
-                                if let Some((pi, pt, bytes)) = Self::parse_svg_message(&newer) {
-                                    // If this starts a newer batch (page 0
-                                    // with a possibly different total), clear
-                                    // stale pages from the previous batch.
-                                    if pi == 0 && pt != latest_total {
-                                        latest.clear();
-                                        latest_total = pt;
-                                    }
-                                    if latest.insert(pi, bytes).is_some() {
-                                        skipped += 1;
-                                    }
-                                }
+                    // Drain everything queued behind the triggering message.
+                    // Stops at the first non-text message or when the queue is
+                    // empty (`now_or_never` yields None).
+                    while let Some(Some(Ok(Message::Text(newer)))) = ws.next().now_or_never() {
+                        if let Some((pi, pt, bytes)) = Self::parse_svg_message(&newer) {
+                            // If this starts a newer batch (page 0 with a
+                            // possibly different total), clear stale pages from
+                            // the previous batch.
+                            if pi == 0 && pt != latest_total {
+                                latest.clear();
+                                latest_total = pt;
                             }
-                            // Non-text or no more queued — stop draining.
-                            _ => break,
+                            if latest.insert(pi, bytes).is_some() {
+                                skipped += 1;
+                            }
                         }
                     }
                     if skipped > 0 {
@@ -650,16 +649,16 @@ impl Item for TypstPreviewView {
 // Live-path helpers: glyph defs caching, page header parsing
 // =========================================================================
 
-pub(crate) const GLYPH_DEFS_OPEN: &str = r#"<defs id="glyph">"#;
-pub(crate) const DEFS_CLOSE: &str = "</defs>";
+pub const GLYPH_DEFS_OPEN: &str = r#"<defs id="glyph">"#;
+pub const DEFS_CLOSE: &str = "</defs>";
 
-pub(crate) struct PageHeader {
-    pub(crate) index: usize,
-    pub(crate) total: usize,
+pub struct PageHeader {
+    pub index: usize,
+    pub total: usize,
 }
 
 /// Parse a `page:{index}:{total}\n` prefix from a server message.
-pub(crate) fn parse_page_header(text: &str) -> Option<(PageHeader, &str)> {
+pub fn parse_page_header(text: &str) -> Option<(PageHeader, &str)> {
     let rest = text.strip_prefix("page:")?;
     let newline_pos = rest.find('\n')?;
     let header_str = &rest[..newline_pos];
@@ -672,7 +671,7 @@ pub(crate) fn parse_page_header(text: &str) -> Option<(PageHeader, &str)> {
 
 /// Insert cached glyph defs into an SVG that had them stripped by the server.
 /// Inserts right after the opening `<svg ...>` tag.
-pub(crate) fn inject_glyph_defs(svg_bytes: &[u8], cached_defs: &str) -> Vec<u8> {
+pub fn inject_glyph_defs(svg_bytes: &[u8], cached_defs: &str) -> Vec<u8> {
     let svg_str = String::from_utf8_lossy(svg_bytes);
     let s: &str = &svg_str;
     if let Some(close_bracket) = s.find('>') {
@@ -693,6 +692,8 @@ pub(crate) fn inject_glyph_defs(svg_bytes: &[u8], cached_defs: &str) -> Vec<u8> 
 mod layout_tests {
     use super::*;
     use gpui::{TestAppContext, div, px};
+    use image::Frame;
+    use smallvec::SmallVec;
 
     /// A minimal view that displays a RenderImage the same way TypstPreviewView does.
     struct TestImageView {

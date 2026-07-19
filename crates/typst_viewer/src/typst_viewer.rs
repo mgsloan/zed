@@ -1,4 +1,3 @@
-pub mod bench_preview;
 pub mod svg_stream;
 pub mod typst_viewer_view;
 

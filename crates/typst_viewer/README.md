@@ -44,9 +44,9 @@ Zed (typst_viewer crate)
  │   ├─ LSP integration: find_tinymist_server, start_preview_via_lsp
  │   ├─ tinymist.doStartPreview with --server-svg
  │   └─ Workspace action registration
- └─ bench_preview.rs
-     ├─ bench_preview_loop: cold compile via tinymist CLI
-     └─ bench_preview_lsp: warm compile via LSP with comemo
+ └─ examples/typst_preview_bench.rs
+     ├─ loop: cold compile via tinymist CLI
+     └─ lsp: warm compile via LSP with comemo
 ```
 
 ## Data flow
@@ -110,8 +110,9 @@ Frame dropping ensures bursts don't queue up.
 # Unit tests (15 tests)
 cargo test -p typst_viewer
 
-# Pipeline benchmarks (requires tinymist binary + .typ document)
-cargo test -p typst_viewer --release -- bench_preview --nocapture --ignored
+# Pipeline benchmarks (requires tinymist binary + .typ document).
+# Runs both benchmarks; pass `loop` or `lsp` to run just one.
+cargo run -p typst_viewer --release --example typst_preview_bench
 ```
 
 Tests:
@@ -119,9 +120,9 @@ Tests:
 - **Multi-page**: mock generation, page header parse/reject, glyph defs injection
 - **GPUI layout**: image bounds consistency across updates, display size verification
 
-Benchmarks:
-- **bench_preview_loop**: cold compile via `tinymist compile --format svg`
-- **bench_preview_lsp**: warm compile via LSP stdio with comemo memoisation
+Benchmarks (`examples/typst_preview_bench.rs`):
+- **loop**: cold compile via `tinymist compile --format svg`
+- **lsp**: warm compile via LSP stdio with comemo memoisation
 
 ## tinymist fork changes
 

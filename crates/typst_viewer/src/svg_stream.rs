@@ -464,11 +464,11 @@ mod tests {
             }
 
             for i in 0..count {
-                let msg = ws
-                    .next()
-                    .await
-                    .unwrap_or_else(|| panic!("expected message for version {i}"))
-                    .unwrap_or_else(|err| panic!("message {i} should be Ok: {err}"));
+                let msg = match ws.next().await {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(err)) => panic!("message {i} should be Ok: {err}"),
+                    None => panic!("expected message for version {i}"),
+                };
 
                 match msg {
                     Message::Text(text) => {
@@ -633,11 +633,11 @@ mod tests {
             }
 
             for i in 0..page_count {
-                let msg = ws
-                    .next()
-                    .await
-                    .unwrap_or_else(|| panic!("expected message for page {i}"))
-                    .unwrap_or_else(|err| panic!("page {i} should be Ok: {err}"));
+                let msg = match ws.next().await {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(err)) => panic!("page {i} should be Ok: {err}"),
+                    None => panic!("expected message for page {i}"),
+                };
 
                 match msg {
                     Message::Text(text) => {
