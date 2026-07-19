@@ -8,16 +8,18 @@ large-document-scalable way to stream a rendered typst document from tinymist to
 lightweight SVG-rasterizing client (Zed). It supersedes the current "whole-block
 glyph-defs stripping + send every page every frame" approach.
 
-It is a **transport/protocol** design. How the client rasterizes the SVG it
-receives (resvg today) is out of scope — no glyph atlas, display list, or other
-renderer changes are proposed here.
+It is a **protocol** design. How the client rasterizes the SVG it receives (resvg
+today) is out of scope — no glyph atlas, display list, or other renderer changes are
+proposed here.
 
-It covers two largely independent axes:
+It covers three largely independent axes:
 
 - **Glyph transport efficiency** (§§2–5): the bytes per keystroke are dominated by
   glyph defs; how to send each glyph once.
 - **Large-document scaling** (§6): how "send the whole document every frame" fails
   at hundreds of pages, and the index-based windowing that fixes it.
+- **Wire transport** (§7): a Unix domain socket locally, TCP when the language
+  server is remote.
 
 ## 1. Current architecture (baseline)
 
@@ -48,22 +50,25 @@ appears across frames and across pages. Therefore:
    order-independent: "here is symbol `gXXXX`" applies any number of times, in any
    order, safely.
 4. **Stable across recompiles.** The id is a hash of `(font, glyph_index)`, so it
-   is expected to be identical from one compile to the next; the compile-epoch tag
-   (§5.1) is a fallback should that ever not hold.
+   is expected to be identical from one compile to the next.
 
 The right model is a **monotonically growing, content-keyed glyph library** shared
 by all pages — not a per-page, per-frame blob.
 
-**Pages have per-page sizes and are identified by index.** typst supports multiple
-page sizes in one document (`#set page(width:, height:)`, `flipped: true`), so a
-page is `(index, width, height, content)` — each `Page` carries its own `size`
-(Zed already renders mixed sizes). Two useful properties:
+**Pages are content-addressable, and the index is only a position.** typst supports
+multiple page sizes in one document (`#set page(width:, height:)`, `flipped: true`),
+so a page is `(width, height, content)` displayed at some index — each `Page`
+carries its own `size` (Zed already renders mixed sizes). Two useful properties:
 
-1. **Index is a sufficient identity.** Within a compile epoch, page *k* is page
-   *k*; that's all the client needs to correlate metadata, content, cached
-   bitmaps, and scroll position — including across edits (§6.4).
-2. **Pages are content-hashable.** A page's render inputs can be hashed cheaply, so
-   the server can tell whether page *k* changed between renders (§6.3).
+1. **Content is the identity; the index is a display position.** A page's render
+   inputs hash cheaply, giving a content id that is *stable when the content moves*.
+   That matters because content moving between indices is routine — insert a
+   paragraph early and every later page shifts down one. Keying page bodies by
+   content id makes such a shift a cheap remap instead of a resend of the whole
+   document tail (§6.3).
+2. **The hash must cover exactly what is drawn.** `typst_svg::svg(page)` renders
+   from `frame`, `bleed` and `fill`; hashing those three is invariant precisely
+   when the rendered SVG is invariant (§6.3).
 
 ## 3. Why the current approach is weak
 
@@ -147,21 +152,24 @@ Split the stream into two message kinds instead of one entangled SVG:
 
 ```
 glyphs\n<defs id="glyph"><symbol id="gAAAA">…</symbol>…</defs>
-page:{index}\n<svg …>…<use href="#gAAAA" …/>… (NO defs) …</svg>
+page:{c}\n<svg …>…<use href="#gAAAA" …/>… (NO defs) …</svg>
 ```
+
+(`{c}` is the page's content id, §6.3. Layer A only cares that glyph defs are
+separated from page bodies; how bodies are addressed is §6's concern.)
 
 Server (tinymist), per connection:
 
 ```text
 sent: HashSet<GlyphId>                 # per-connection, monotonic
 on render(document):
-    referenced = union of glyph ids used by the pages being sent this frame
+    referenced = union of glyph ids used by the page bodies being sent
     new = referenced - sent
     if new is non-empty:
         emit  "glyphs\n" + <defs> containing only symbols for `new`
         sent |= new
-    for each page being sent:
-        emit  "page:index\n" + page-body-svg-without-defs
+    for each body being sent:
+        emit  "page:{c}\n" + page-body-svg-without-defs
 ```
 
 Client (Zed):
@@ -212,18 +220,24 @@ pages composed together (visible + prefetch, §6.2). Two safeguards:
 Cache lifetime: content-addressing keeps every entry valid across recompiles (an
 id's meaning can never change), so the library is never *stale* — LRU eviction is
 purely a memory-budget decision, never a correctness one, and routine growth is
-handled continuously by the LRU. **No wholesale-resync signal is needed.** The two
-situations that would seem to call for one are both already covered:
+handled continuously by the LRU. **No wholesale-resync signal (`reset`, epoch tag)
+is needed**, for either glyphs or pages:
 
-- **Reconnect / server restart** — a new connection's server `sent` set starts
-  empty, so it re-announces glyphs the client may already hold. The merge is
-  idempotent, so this costs a little redundant transport and nothing else.
-- **Compile-epoch rollover** — document closed and reopened. Glyph ids are
-  document-independent, so a rollover cannot invalidate a glyph.
+- **Reconnect / server restart** — the server's per-connection state starts empty,
+  so it re-announces what the client may already hold. Every merge is idempotent
+  (glyphs and page bodies are both content-keyed), so this costs a little redundant
+  transport and nothing else.
+- **Document closed and reopened** — a new connection with fresh state on both
+  sides. Glyph ids are document-independent and page ids are content-derived, so
+  nothing carried over can be invalidated.
+- **A `SvgOptions` change** (invert-colors, bleed) invalidates rendered output
+  without changing any content hash — but the server can simply clear its own
+  sent-state and resend the held pages; the client replaces them on receipt. No
+  client-visible signal required.
 
-A compile-epoch tag on `glyphs`/`page` still lets either side notice a rollover,
-which matters for *page* state (index identity is only stable within an epoch,
-§6.4). It carries no implication for the glyph library.
+The condition that would reintroduce the need: sharing one `GlyphRegistry` across
+connections to dedup transport, which would destroy the per-connection freshness
+these all rely on.
 
 ### 5.2 Layer B — a principled client representation
 
@@ -279,30 +293,44 @@ would force the server to reconstruct the viewer's gaps/zoom to map it to pages.
 Page **indices** are the natural interface — the viewer already computes which
 indices intersect its viewport, so it names them.
 
-### 6.1 Two channels: metadata and content
+### 6.1 Two channels: the page table and page bodies
 
-1. **Layout metadata (cheap, all pages).** `index → (width, height)` for the whole
-   document, plus `total`. The viewer needs this to build the scroll region and
-   decide which indices are visible *before* it has any content. It is small
-   (N × a few numbers). **It is sent on connect and thereafter only when it
-   changes** — i.e. when page count or any page size changes. Most edits don't
-   alter page geometry, so it is rarely resent; a burst of typing that doesn't
-   repaginate sends no `layout` messages at all.
+**1. `pages` — the page table (incremental).** One index-keyed table carrying both
+the geometry the viewer needs to lay out and the content id it needs to know *what*
+to show:
 
-   ```
-   layout\n{ total, pages: [ {i, w, h}, … ] }      # server → client, on-change only
-   ```
+```
+pages\n{ total, full: true, pages: [ {i, w, h, c}, … ] }   # snapshot, on connect
+pages\n{ total, pages: [ {i, c}, … ] }                     # delta, afterwards
+```
 
-2. **Page content (SVG, on demand, by index).** Sent only for indices the viewer is
-   subscribed to, and — combined with page-content hashing (§6.3) — only when that
-   page actually changed.
+- **`total` is in every message.** Page count changes ride along; on a shrink the
+  client drops entries past `total`. No separate resize signal.
+- **Entries carry only the fields that changed.** `w`/`h` and `c` are all optional,
+  keyed by `i`. A keystroke sends `{i, c}` with no geometry; a page resize sends
+  `w`/`h` with no `c`.
+- **`full: true`** only on the first message after connect (the client has nothing);
+  everything after is a delta.
 
-   ```
-   page:{index}\n<svg …>… (defs-free; glyphs via the §5.1 registry) …</svg>
-   ```
+Geometry and mapping are combined deliberately. Sent as whole snapshots they could
+not be: geometry changes rarely but content ids change on nearly every keystroke, so
+a full table per keystroke would be O(N) — reintroducing exactly the cost this
+section exists to remove. Incrementality is what makes one table viable, and it
+keeps geometry and mapping consistent by construction (they are one snapshot of the
+document, never two views that can disagree).
 
-The metadata channel is what enables size-accurate placeholders and kills layout
-jump, which is the foundation for smooth scroll.
+**2. `page` — a page body, keyed by content id.** Sent once per distinct content,
+*not* per index:
+
+```
+page:{c}\n<svg …>… (defs-free; glyphs via the §5.1 registry) …</svg>
+```
+
+The client caches bodies (and their rasterized bitmaps) by `c` and consults the
+table to decide which `c` to display at which index.
+
+The table is what enables size-accurate placeholders and kills layout jump, which is
+the foundation for smooth scroll.
 
 ### 6.2 Index subscription as a retention contract
 
@@ -323,14 +351,15 @@ view\n{ visible: [...], prefetch: [...], cached?: [...] }   # client → server,
   changed.
 
 The subscription doubles as a **retention contract**: the union
-`held = visible ∪ prefetch ∪ cached` is exactly the set of pages the client
-promises to keep. That is what lets the server know *what the client has* without
-guessing — the hard part of skipping unchanged pages (§6.3). The client may evict
+`held = visible ∪ prefetch ∪ cached` is exactly the set of pages the client promises
+to keep. That is what lets the server know *what the client has* without guessing —
+the hard part of not resending a body it already sent (§6.3). The client may evict
 anything **outside** `held`; the server tracks nothing outside `held`; so eviction
-and server-forgetting stay in lockstep at the same boundary, and a page is simply
-resent when it re-enters `held`.
+and server-forgetting stay in lockstep at the same boundary, and a body is simply
+resent when its content re-enters `held`. (The declaration is in indices; the server
+maps them through the `pages` table to the content ids it must retain, §6.3.)
 
-- **Placeholders from metadata:** an unfetched page draws as a correctly-sized box
+- **Placeholders from the table:** an unfetched page draws as a correctly-sized box
   (optionally a stale/low-res thumbnail); scrolling never reflows, content pops in
   on arrival — standard PDF-viewer behavior (pdf.js, native viewers).
 - **Memory budget = the `held` set.** Retention and prefetch are the same knob: the
@@ -343,58 +372,97 @@ resent when it re-enters `held`.
 `view` fits the existing binary `key,value` control-message channel tinymist
 already uses (`partial-rendering,true`).
 
-### 6.3 Sending only the pages that changed
+### 6.3 Content ids: sending each page body once, wherever it lands
 
-Given `held` from §6.2, the server sends page `k` when `k ∈ held` **and** its
-content differs from what it last sent this connection (or `k` just entered
-`held`). Two questions:
+The server sends a body for content id `c` when some held index maps to `c` and it
+has not already sent `c` to this client. Three questions:
 
-*How does the server know a page changed?* Hash the page's **render inputs,
-pre-render** — not the emitted SVG. `typst_svg::svg(page)` is a function of the
-page's `frame` (laid-out content), its `bleed`, and its `fill` (background), plus a
-constant `SvgOptions`. `Page` derives `Hash` and covers all of these, so `hash(page)`
-is a **safe** change key: an unchanged hash guarantees identical SVG. Two nuances
-from the typst types:
+*What is the content id?* A hash of the page's **render inputs, pre-render** — not
+the emitted SVG. `typst_svg::svg(page)` renders from the page's `frame` (laid-out
+content), `bleed`, and `fill` (background), plus a constant `SvgOptions`. So the id
+is `hash(frame, bleed, fill)`. Two consequences from the typst types:
 
 - **Don't hash `Frame` alone.** `Frame` is only the content geometry; it excludes
   `fill` and `bleed`. A `#set page(fill: …)` change leaves the frame identical, so a
-  frame-only key would miss it and show a stale page — a correctness bug.
-- **`Page` is slightly over-sensitive.** It also hashes `numbering`/`supplement`/
-  `number`, which don't affect the SVG. A pure renumber — inserting an early page
-  shifts later pages' logical `number` while their frames are byte-identical — would
-  change the `Page` hash and needlessly resend an identical page. If that matters
-  (large docs with early inserts), hash the render-affecting subset `(frame, bleed,
-  fill)` instead: precise, still catches fill/bleed. Default to hashing `Page` for
-  simplicity; tighten to the subset if renumber false-positives show up.
+  frame-only id would miss it and show a stale page — a correctness bug.
+- **Don't hash the whole `Page` either.** `Page` also covers `numbering`/
+  `supplement`/`number`, none of which are drawn. `number` is the *logical* page
+  number, which changes on exactly the shift we want to be free — so `hash(Page)`
+  is not shift-invariant and would defeat content addressing. (If the number is
+  actually printed in a header, that text lives *in the frame*, so the id changes
+  and the page is correctly resent.)
 
-Hashing the input (not SVG bytes) lets tinymist **skip `typst_svg::svg(page)` for
-unchanged pages** — saving render, not just transport. A change to `SvgOptions`
-(e.g. toggling invert-colors) invalidates all pages; treat it as a global resync /
-epoch bump.
+Hashing `(frame, bleed, fill)` is therefore invariant precisely when the rendered
+SVG is invariant — no more, no less. Hashing the input rather than SVG bytes also
+lets tinymist **skip `typst_svg::svg(page)` entirely for content it has already
+sent**, saving render, not just transport.
 
-*How does the server know the client still has the old page?* The retention contract
-(§6.2). The server keeps a per-connection `sent_version: Map<Index, Hash>` scoped to
-`held`: send when `k` is new-to-`held` or its hash changed; drop `sent_version[k]`
-when `k` leaves `held`. No client-sent hashes, no eviction messages, no manifest
-round-trip — the `view` declaration carries the missing information.
+*Why content ids rather than per-index versions?* Because content moving between
+indices is routine. Insert a paragraph near the top of a long document and every
+later page shifts down one. With per-index versioning, index 6 now holds what index
+5 held, so its version mismatches and it is resent — and so is the entire tail of
+the document, even though the client already has every one of those pages. With
+content ids the ids are unchanged; only the mapping moves, so the server sends a
+small `pages` delta and **zero bodies**. Identical pages (blank pages, repeated
+boilerplate) also dedup for free. The costs by event:
 
-**Recovery — `want-page`.** A `want-page\nk` pull (server resends page `k`) mirrors
-`want-glyphs`: the safety valve if a client is forced to evict inside `held` under
-memory pressure, or wants a page it never subscribed to. **Planned on the tinymist
+| event | `pages` delta | bodies sent |
+| --- | --- | --- |
+| keystroke on one page | 1 entry (`c`) | 1 |
+| **pagebreak shift** | remap entries (`c` only) | **0** |
+| page size change | entries with `w`/`h` | 0 |
+
+This is the same reuse reflexo gets from its per-page `Fingerprint` and
+`data-reuse-from`, without the DOM dependency: our "reuse" is a client-side cache
+lookup by id rather than a reference into a live DOM.
+
+*How does the server know the client still has a body?* The retention contract
+(§6.2). The client declares held *indices*; the server maps them through the current
+table to the content ids the client holds, and keeps a per-connection
+`sent_content: HashSet<ContentId>` scoped to that set — dropping an id once no held
+index maps to it. During a shift the two sides can briefly disagree about which ids
+are held, which degrades to a redundant (idempotent) resend, never a stale page.
+
+A change to `SvgOptions` (e.g. toggling invert-colors) changes rendered output
+without changing any content id; the server clears its own `sent_content` and
+resends the held bodies, and the client replaces them on receipt.
+
+**Recovery — `want-page`.** A `want-page\n{c}` pull (server resends that body)
+mirrors `want-glyphs`: the safety valve if a client is forced to evict a body it
+declared held, or wants content it never subscribed to. **Planned on the tinymist
 side** so the protocol is complete and robust for any client; **Zed does not send it
 initially** — Zed honors its declared `held` set, so it never needs to pull. It can
 be added later with no protocol change.
 
 ### 6.4 Reflow anchoring
 
-When metadata changes under an edit (repagination shifts page count/sizes), the
-viewer must not visually jump. **Page index is a sufficient anchor**: keep the
-top-visible page index pinned across the metadata update and recompute scroll offset
-from the new sizes. Nothing more is needed — no content fingerprints, no coordinate
-remapping — because index is a stable identity within a compile epoch and the viewer
-owns the offset math. (If a compile epoch rolls over — full reopen — indices are no
-longer comparable, so the viewer drops its page state and starts from the new
-`layout`. The glyph library is unaffected, §5.1.)
+When the table changes under an edit (repagination shifts page count and sizes), the
+viewer must not visually jump. Anchor on **content, falling back to index**.
+
+Before applying a `pages` update, capture the anchor: the content id `c` of the page
+covering the top of the viewport, its index, and the scroll offset within that page.
+After applying:
+
+1. **Content anchor (preferred).** If `c` still appears in the table, scroll so that
+   index sits at the same position, preserving the within-page offset. The view
+   follows the content across the repagination. If `c` appears at several indices
+   (duplicate pages — blanks, repeated boilerplate), pick the one nearest the
+   previous index.
+2. **Index fallback.** If `c` is gone from the table, pin the previous *index*
+   instead (clamped to `total - 1`), again preserving the within-page offset.
+
+The two cases are well matched to what causes them, which is why this is worth the
+few extra lines over index-only anchoring:
+
+- Editing *above* the viewport — the common case — shifts your page down without
+  changing its content. Index anchoring would jump the view by however many pages
+  shifted; content anchoring holds it still.
+- The anchor's content id only disappears when the page you are *looking at* changed
+  (you typed on it) or was deleted. There the page is still meaningfully "page *k*",
+  so falling back to the index is exactly right.
+
+Both branches are pure viewer-side math over the table; neither needs anything more
+from the protocol, since content ids are already there for §6.3.
 
 ### 6.5 Precedent and honest limits
 
@@ -411,7 +479,59 @@ longer comparable, so the viewer drops its page state and starts from the new
   Windowing saves serialize-to-SVG, transport, rasterization, and memory — not
   compilation.
 
-## 7. Recommendation & phasing
+## 7. Transport: a local socket, TCP when remote
+
+Everything above is a sequence of framed messages (`pages`, `glyphs`, `page:{c}`,
+`view`, `want-*`) and says nothing about how the bytes move. Today the data plane is
+`ws://127.0.0.1:{port}`, which is an artifact of tinymist's original client rather
+than a requirement: typst.ts runs in a browser or webview, and a browser can only
+speak WebSocket. A native rasterizing client has better options.
+
+### 7.1 Local: Unix domain socket
+
+`AF_UNIX` is cross-platform — Windows has supported it since 10/1803 — and Zed
+already wraps both families in `crates/net` (`net::async_net::{UnixListener,
+UnixStream}`), in production use by `askpass`, `context_server` and
+`remote_server`. Over loopback TCP it buys:
+
+- **Lower latency and higher throughput.** No TCP/IP stack traversal: no checksums,
+  no Nagle, no ephemeral port allocation. This matters most for the bulk frames —
+  the first glyph payload and page bodies.
+- **Access control by filesystem permissions.** The current design opens a
+  localhost TCP port that *any* local process can connect to and read the document
+  from. A socket path gets ordinary file permissions instead. This is arguably the
+  strongest argument, independent of performance.
+- No port exhaustion, no firewall prompts.
+
+Server side this is a bind option alongside the existing `--data-plane-host`, e.g.
+`--data-plane-socket=<path>`, with the path returned from `doStartPreview` next to
+today's `dataPlanePort`.
+
+**Framing is not free here.** WebSocket delivers discrete messages; a Unix socket
+delivers a byte stream, so the socket transport needs explicit framing — a 4-byte
+little-endian length prefix per message is sufficient. The message *payloads* are
+byte-identical to the WebSocket ones (`pages\n{…}`, `page:{c}\n<svg …>`), so this is
+purely an envelope, and the protocol layers above are unchanged.
+
+### 7.2 Remote: TCP
+
+A Unix socket cannot cross hosts. When the language server runs on another machine
+(Zed's SSH remote development), the data plane stays TCP/WebSocket. The client
+chooses: if the server is local *and* `doStartPreview` returned a socket path, use
+the socket; otherwise use the port. Zed already knows whether a project is remote,
+so no negotiation handshake is required.
+
+This also means the remote case keeps the bandwidth characteristics that motivated
+the glyph registry and windowing in the first place — over a real network those
+optimizations stop being nice-to-haves.
+
+### 7.3 The browser client is unaffected
+
+This *adds* a transport rather than replacing one; tinymist's own preview keeps
+WebSocket. That bounds the upstream ask to a bind option plus one extra field in the
+`doStartPreview` response — not a redesign of the data plane.
+
+## 8. Recommendation & phasing
 
 Two orthogonal tracks that compose:
 
@@ -421,26 +541,27 @@ Two orthogonal tracks that compose:
    (coalescable, defs-free). *Fixes the invisible-glyph bug (§3.2) and the
    whole-block/per-page/reflow waste (§3.1, §3.5).* Small change both sides.
 2. **Layer B** — structured client `library`, per-page id parse, `want-glyphs`
-   recovery, LRU with the capacity floor (§5.1), compile-epoch tagging.
+   recovery, LRU with the capacity floor (§5.1).
 
 **Track 2 — large-document scaling**
 
-3. **Metadata channel** (§6.1) — the `layout` message (geometry; sent on-change
-   only). The client builds the scroll region, computes visibility, and draws
+3. **The `pages` table** (§6.1) — incremental index-keyed geometry + content ids.
+   The client builds the scroll region, computes visibility, and draws
    size-accurate placeholders.
-4. **Index subscription + retention contract + change detection** (§6.2–6.4) — the
-   `view` subscription (`visible`/`prefetch`/`cached`) doubling as the retention
-   contract, per-connection `sent_version` scoped to `held`, cheap pre-render
-   page-hash change detection, and index-based reflow anchoring. `want-page` is
-   planned server-side, deferred on the Zed side. Turns per-keystroke cost from
-   O(doc) into O(`held`) and bounds memory.
+4. **Content-addressed bodies + subscription + retention** (§6.2–6.4) — `page:{c}`
+   bodies keyed by `hash(frame, bleed, fill)`, the `view` subscription
+   (`visible`/`prefetch`/`cached`) doubling as the retention contract, a
+   per-connection `sent_content` set, and content-anchored reflow with index
+   fallback. `want-page` is planned server-side, deferred on the Zed side. Turns
+   per-keystroke cost from O(doc) into O(`held`), makes pagebreak shifts nearly
+   free, and bounds memory.
 
 Order by need: a small-doc deployment can ship Track 1 alone; large-doc support
-requires Track 2. Layer A is the natural first PR; the metadata channel (step 3) is
+requires Track 2. Layer A is the natural first PR; the `pages` table (step 3) is
 small and independently useful (placeholders, no layout jump) and can precede the
 full subscription.
 
-## 8. Interaction with frame coalescing
+## 9. Interaction with frame coalescing
 
 Coalescing is worth keeping (it bounds rasterize work under fast typing). The design
 makes it safe by moving all *stateful* data (the glyph library) into messages
@@ -449,7 +570,7 @@ dropped `page:` frame just means "an intermediate layout we skipped"; the next o
 is complete on its own given the library. This is the core reason to split the
 stream.
 
-## 9. Alternatives considered
+## 10. Alternatives considered
 
 - **Keep whole-block strip, fix only Zed caching** (cache defs from every drained
   frame, not just the survivor). Fixes the bug, but keeps whole-block granularity,
@@ -464,15 +585,40 @@ stream.
   dragging the full compiler onto the client (~84 net-new crates, ~660 MB of rlibs
   measured against Zed's tree). Rejected: `--server-svg` exists precisely to keep the
   client to an SVG rasterizer.
+- **Send rasterized bitmaps instead of SVG.** Would delete the entire glyph
+  machinery (a page bitmap has no shared sub-resources), and `typst-render` already
+  memoizes glyph rasterization globally via comemo — keyed by
+  `(font, glyph, subpixel, ppem)` and returning an alpha `Bitmap` tinted afterwards
+  — so the server would get cross-page, cross-render glyph reuse for free. Rejected
+  because it bakes **display resolution into the protocol**: the server must know
+  DPI × zoom, so zoom becomes a round-trip, per-client rasterizations multiply, and
+  the "server owns content, viewer owns presentation" boundary (§6) collapses.
+  Raster also grows with the square of scale where the SVG body is scale-free.
+- **Multiplex the data plane over the existing LSP connection** (custom
+  `tinymist/...` notifications). Attractive because it needs no new transport and
+  would work under remote development for free. Rejected for now: JSON-RPC forces
+  string/base64 encoding of payloads, and large frames head-of-line block
+  latency-sensitive LSP traffic (completions, diagnostics) on the same pipe. §7
+  keeps TCP for the remote case instead.
 
-## 10. Open questions
+## 11. Open questions
 
 - **LRU sizing** (§5.1): the concrete budget and the capacity floor for the shared
   cross-preview store — sized to the union of all previews' composed (visible +
   prefetch) pages, with per-compose pinning to prevent thrash.
-- **Page-change key** (§6.3): default to hashing `Page`; decide whether the
-  renumber false-positive is common enough to warrant the `(frame, bleed, fill)`
-  subset. Confirm typst exposes a cheap `Page`/`Frame` hash on this path (it derives
-  `Hash`).
-- **`SvgOptions` changes** (invert-colors, bleed): handle as a global epoch bump
-  that invalidates all cached pages; confirm nothing else varies the per-page SVG.
+- **Content id composition** (§6.3): `(frame, bleed, fill)` is derived from what
+  `typst_svg::svg` reads today. Confirm nothing else varies the rendered SVG, and
+  that hashing the three components is as cheap as hashing `Page` (all derive
+  `Hash`; `Page` is not usable because its `number` field breaks shift-invariance).
+- **Held-set bookkeeping across a shift** (§6.3): the server maps held *indices* to
+  content ids through the current table, so during a repagination the two sides can
+  briefly disagree about which ids are held. This degrades to a redundant resend;
+  confirm there is no case where it instead drops a body the client needs.
+- **Socket path lifecycle** (§7.1): where the socket file lives, how a stale one
+  from a crashed server is detected and cleaned up, and whether the path needs to be
+  distinct per preview task. Windows `AF_UNIX` also has its own path-length and
+  semantics quirks worth checking against `crates/net`'s shim.
+- **Locality detection** (§7.2): Zed knows whether a project is remote, but confirm
+  that is the right signal — e.g. a locally-running server against a remote
+  filesystem, or a containerized language server that is "local" but cannot share a
+  filesystem namespace for the socket.
