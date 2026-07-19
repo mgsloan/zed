@@ -250,7 +250,7 @@ async fn handle_live_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typst_viewer_view::{inject_glyph_defs, parse_page_header};
+    use crate::{inject_glyph_defs, parse_page_header};
 
     #[test]
     fn websocket_svg_roundtrip() {

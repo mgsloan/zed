@@ -43,9 +43,7 @@ use futures::StreamExt as _;
 use gpui::SvgRenderer;
 
 use typst_viewer::svg_stream::{self, PreviewSocket};
-use typst_viewer::typst_viewer_view::{
-    inject_glyph_defs, parse_page_header, DEFS_CLOSE, GLYPH_DEFS_OPEN,
-};
+use typst_viewer::{inject_glyph_defs, parse_page_header, DEFS_CLOSE, GLYPH_DEFS_OPEN};
 
 fn main() {
     let which = std::env::args().nth(1);

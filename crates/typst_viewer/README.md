@@ -34,16 +34,15 @@ Zed (typst_viewer crate)
  │   ├─ WebSocket client (async-tungstenite + smol)
  │   ├─ connect(), PreviewSocket type
  │   └─ Mock server for testing
- ├─ typst_viewer_view.rs
+ ├─ typst_viewer.rs
+ │   ├─ LSP integration: find_tinymist_server, start_preview_via_lsp
+ │   ├─ tinymist.doStartPreview with --server-svg
+ │   ├─ Workspace action registration
  │   ├─ Receive loop with frame dropping (now_or_never drain)
  │   ├─ Glyph defs caching + injection for stripped frames
  │   ├─ SVG rasterisation: gpui SvgRenderer::render_single_frame
  │   ├─ Multi-page display with vertical scroll
  │   └─ GPUI view with key_context + track_focus
- ├─ typst_viewer.rs
- │   ├─ LSP integration: find_tinymist_server, start_preview_via_lsp
- │   ├─ tinymist.doStartPreview with --server-svg
- │   └─ Workspace action registration
  └─ examples/typst_preview_bench.rs
      ├─ loop: cold compile via tinymist CLI
      └─ lsp: warm compile via LSP with comemo
