@@ -17,7 +17,7 @@ The preview leverages infrastructure already running: the tinymist LSP
 memoisation (~26ms incremental recompile). Rather than pulling tinymist's
 ~250 reflexo rendering crates into Zed, we have tinymist render SVG
 server-side and stream it to Zed over WebSocket. Zed rasterises with
-[resvg](https://github.com/nicubugarin/resvg) (already in the tree) and
+GPUI's built-in SVG renderer (`SvgRenderer`, backed by resvg) and
 displays via GPUI.
 
 ```
@@ -37,7 +37,7 @@ Zed (typst_viewer crate)
  ├─ typst_viewer_view.rs
  │   ├─ Receive loop with frame dropping (now_or_never drain)
  │   ├─ Glyph defs caching + injection for stripped frames
- │   ├─ SVG rasterisation: usvg parse → resvg render → BGRA swap
+ │   ├─ SVG rasterisation: gpui SvgRenderer::render_single_frame
  │   ├─ Multi-page display with vertical scroll
  │   └─ GPUI view with key_context + track_focus
  ├─ typst_viewer.rs
@@ -61,7 +61,7 @@ keystroke
   → Zed receive loop
   → drain queued messages (frame dropping)
   → inject cached glyph defs if stripped
-  → usvg::Tree::from_data → resvg::render → BGRA swap
+  → gpui SvgRenderer::render_single_frame (parse, render, BGRA swap)
   → Arc<RenderImage> with scale_factor
   → GPUI img() display, multi-page vertical scroll
 ```
@@ -87,8 +87,8 @@ of ~2MB). The tinymist fork strips unchanged glyph defs after the first
 frame using a hash comparison, reducing per-frame transfer to ~200KB.
 
 On the Zed side, the first frame's defs are cached. Subsequent frames
-with stripped defs have them injected before rasterisation so usvg can
-resolve all `<use>` references.
+with stripped defs have them injected before rasterisation so the SVG
+renderer can resolve all `<use>` references.
 
 ## Performance
 

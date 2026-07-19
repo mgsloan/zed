@@ -216,6 +216,7 @@ impl TypstPreviewView {
         cx: &mut gpui::AsyncApp,
     ) -> anyhow::Result<()> {
         let mut cached_glyph_defs: HashMap<usize, String> = HashMap::new();
+        let svg_renderer = cx.update(|cx| cx.svg_renderer());
 
         while let Some(msg_result) = ws.next().await {
             match msg_result {
@@ -307,8 +308,8 @@ impl TypstPreviewView {
 
                         // Glyph defs caching: first frame has full defs,
                         // subsequent frames may have them stripped by the
-                        // server.  Inject cached defs when missing so
-                        // usvg can resolve all <use> references.
+                        // server.  Inject cached defs when missing so the
+                        // SVG renderer can resolve all <use> references.
                         let has_defs = std::str::from_utf8(&svg_bytes)
                             .map(|s| s.contains(GLYPH_DEFS_OPEN))
                             .unwrap_or(false);
@@ -335,8 +336,13 @@ impl TypstPreviewView {
                         let raster_start = std::time::Instant::now();
                         let image_result = cx
                             .background_executor()
-                            .spawn(async move {
-                                rasterize_svg_to_image(&svg_bytes, 2.0)
+                            .spawn({
+                                let svg_renderer = svg_renderer.clone();
+                                async move {
+                                    svg_renderer
+                                        .render_single_frame(&svg_bytes, 1.0)
+                                        .context("failed to rasterize typst SVG")
+                                }
                             })
                             .await;
 
@@ -685,51 +691,10 @@ pub(crate) fn inject_glyph_defs(svg_bytes: &[u8], cached_defs: &str) -> Vec<u8> 
     }
 }
 
-
-
-
-
-pub(crate) fn rasterize_svg_to_image(svg_bytes: &[u8], scale: f32) -> anyhow::Result<Arc<RenderImage>> {
-    let options = usvg::Options::default();
-    let tree = usvg::Tree::from_data(svg_bytes, &options)?;
-
-    let size = tree.size();
-    log::info!(
-        "typst_viewer: full rasterize SVG size: {}x{} ({}x{} px at {scale}x)",
-        size.width(), size.height(),
-        (size.width() * scale).ceil() as u32,
-        (size.height() * scale).ceil() as u32,
-    );
-    let width = (size.width() * scale).ceil() as u32;
-    let height = (size.height() * scale).ceil() as u32;
-
-    let mut pixmap = tiny_skia::Pixmap::new(width, height)
-        .ok_or_else(|| anyhow::anyhow!("failed to create {width}x{height} pixmap"))?;
-
-    resvg::render(
-        &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
-    );
-
-    let mut buffer = image::ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
-        .ok_or_else(|| anyhow::anyhow!("pixmap data didn't match expected buffer size"))?;
-
-    // GPUI expects BGRA pixel format (Metal textures use BGRA8Unorm).
-    // tiny-skia produces premultiplied RGBA. Swap R↔B channels.
-    for pixel in buffer.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-
-    let image = RenderImage::new(SmallVec::from_elem(Frame::new(buffer), 1))
-        .with_scale_factor(scale);
-    Ok(Arc::new(image))
-}
-
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-    use gpui::{div, px, TestAppContext};
+    use gpui::{TestAppContext, div, px};
 
     /// A minimal view that displays a RenderImage the same way TypstPreviewView does.
     struct TestImageView {

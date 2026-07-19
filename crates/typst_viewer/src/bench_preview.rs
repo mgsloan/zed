@@ -29,12 +29,12 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    use anyhow::Context as _;
     use async_tungstenite::tungstenite::Message;
     use futures::StreamExt;
 
     use crate::typst_viewer_view::{
-        inject_glyph_defs, parse_page_header, GLYPH_DEFS_OPEN, DEFS_CLOSE,
-        rasterize_svg_to_image,
+        DEFS_CLOSE, GLYPH_DEFS_OPEN, inject_glyph_defs, parse_page_header,
     };
 
     // -----------------------------------------------------------------------
@@ -147,9 +147,14 @@ mod tests {
         }
     }
 
-    fn rasterize_full(svg_bytes: &[u8], scale: f32) -> anyhow::Result<Duration> {
+    fn rasterize_full(
+        svg_renderer: &gpui::SvgRenderer,
+        svg_bytes: &[u8],
+    ) -> anyhow::Result<Duration> {
         let start = Instant::now();
-        let _image = rasterize_svg_to_image(svg_bytes, scale)?;
+        let _image = svg_renderer
+            .render_single_frame(svg_bytes, 1.0)
+            .context("failed to rasterize typst SVG")?;
         Ok(start.elapsed())
     }
 
