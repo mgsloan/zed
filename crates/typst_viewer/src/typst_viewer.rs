@@ -84,8 +84,9 @@ impl TypstPreviewView {
                     let range = event.visible_range.clone();
                     view.update(cx, |view, cx| {
                         let scale = window.scale_factor() * view.zoom;
+                        let viewport = viewport_for(&view.list_state, range);
                         view.session.update(cx, |session, cx| {
-                            session.set_viewport(viewport_for(range), scale, cx);
+                            session.set_viewport(viewport, scale, cx);
                         });
                     })
                     .ok();
@@ -324,13 +325,49 @@ impl TypstPreviewView {
     }
 }
 
-fn viewport_for(visible: std::ops::Range<usize>) -> Viewport {
-    let prefetch_start = visible.start.saturating_sub(PREFETCH_MARGIN);
-    let prefetch_end = visible.end + PREFETCH_MARGIN;
+/// Builds a subscription from the on-screen range, ordering `visible` by the
+/// fraction of each page that is on screen (ties broken by index), so the server
+/// serves the page the user is actually reading first.
+///
+/// The fractions come from the list's own measured bounds rather than the page
+/// table, so an unmeasured page's height estimate never skews the ranking.
+fn viewport_for(list_state: &ListState, range: std::ops::Range<usize>) -> Viewport {
+    let viewport = list_state.viewport_bounds();
+    let vp_top = viewport.top();
+    let vp_bottom = viewport.bottom();
+
+    let fraction = |index: usize| -> f32 {
+        let Some(item) = list_state.bounds_for_item(index) else {
+            return 0.0;
+        };
+        let height = item.size.height;
+        if height <= px(0.0) {
+            return 0.0;
+        }
+        let top = item.top().max(vp_top);
+        let bottom = item.bottom().min(vp_bottom);
+        let on_screen = (bottom - top).max(px(0.0));
+        (on_screen / height).clamp(0.0, 1.0)
+    };
+
+    let by_fraction: Vec<(usize, f32)> = range.clone().map(|i| (i, fraction(i))).collect();
+    let visible = order_by_fraction(by_fraction);
+
+    let prefetch_start = range.start.saturating_sub(PREFETCH_MARGIN);
+    let prefetch_end = range.end + PREFETCH_MARGIN;
     Viewport {
         visible,
         prefetch: prefetch_start..prefetch_end,
     }
+}
+
+/// Orders indices by fraction-on-screen descending, ties broken by ascending
+/// index. Pure so the ranking is testable without a laid-out list.
+fn order_by_fraction(mut items: Vec<(usize, f32)>) -> Vec<usize> {
+    items.sort_by(|(a_ix, a_frac), (b_ix, b_frac)| {
+        b_frac.total_cmp(a_frac).then(a_ix.cmp(b_ix))
+    });
+    items.into_iter().map(|(index, _)| index).collect()
 }
 
 impl Render for TypstPreviewView {
@@ -415,6 +452,28 @@ mod layout_tests {
     use super::*;
     use gpui::RenderImage;
     use std::sync::Arc;
+
+    #[test]
+    fn full_page_outranks_a_taller_half_page() {
+        // Page 5 is a short page shown whole; page 6 is a tall page shown half.
+        // By fraction the full page wins even though it may be fewer pixels.
+        let order = order_by_fraction(vec![(5, 1.0), (6, 0.5)]);
+        assert_eq!(order, vec![5, 6]);
+    }
+
+    #[test]
+    fn a_sliver_ranks_last() {
+        // The reported bug: a sliver of the last page must not outrank the main page.
+        let order = order_by_fraction(vec![(4, 0.05), (5, 1.0), (6, 0.4)]);
+        assert_eq!(order, vec![5, 6, 4]);
+    }
+
+    #[test]
+    fn equal_fractions_resolve_top_to_bottom() {
+        // Several full pages tie at 1.0; index order breaks the tie.
+        let order = order_by_fraction(vec![(7, 1.0), (5, 1.0), (6, 1.0)]);
+        assert_eq!(order, vec![5, 6, 7]);
+    }
     use gpui::{TestAppContext, div, px};
     use image::Frame;
     use smallvec::SmallVec;

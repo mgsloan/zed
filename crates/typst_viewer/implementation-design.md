@@ -321,7 +321,9 @@ struct TableEntryDelta {
 }
 
 enum ClientMessage {
-    View { visible: Range<usize>, prefetch: Range<usize>, cached: Vec<usize>,
+    // `visible` is ordered by fraction-on-screen then index (§4.2), so it is a
+    // Vec, not a Range: the order is the send priority the server honors (§5.3).
+    View { visible: Vec<usize>, prefetch: Range<usize>, cached: Vec<usize>,
            scale: f32, encoding: Encoding, opaque: bool },
     WantPages(Vec<usize>),       // §5.7: page *indices*; defined, not sent initially
 }
@@ -510,15 +512,53 @@ help if the *view* still builds every page.
 - **Virtualization.** Only items within the visible range plus `overdraw` are
   rendered and measured.
 - **Visible range for free.** `ListState::set_scroll_handler` delivers
-  `ListScrollEvent { visible_range }` — exactly the `visible` set §5.3 wants,
-  computed by the element that did the layout. The current code instead estimates
-  it by dividing scroll offset by a guessed uniform page height, which is wrong
-  the moment a document mixes page sizes — which typst supports and §3 calls out.
+  `ListScrollEvent { visible_range }` — the on-screen indices, computed by the
+  element that did the layout. The current code instead estimates them by dividing
+  scroll offset by a guessed uniform page height, which is wrong the moment a
+  document mixes page sizes — which typst supports and §3 calls out.
 - **Index-anchored scroll.** `ListOffset { item_ix, offset_in_item }` is the
   anchor §5.5 asks for, given the invalidation discipline in §4.3.
 
 Derive `overdraw` and the `prefetch` window from one another, so the view doesn't
 ask for pages the list won't render or render pages it never subscribed to.
+
+**Order `visible` by the fraction of each page on screen, ties by index (§5.3).**
+`visible_range` is a bare `Range<usize>`, so used directly it puts the topmost index
+first — but a viewport usually straddles a page boundary, so the topmost page is often a
+sliver scrolled off the top while a lower page fills the screen. Sending the sliver first
+makes the server refresh the page the user is *not* reading before the one they are.
+
+The list does not hand out per-item visible fractions, but the view has everything to
+compute them:
+
+- `list_state.logical_scroll_top()` → `ListOffset { item_ix, offset_in_item }`: the
+  first partly-visible index and how far into it the top of the viewport sits.
+- the viewport height, from the list's bounds.
+- each page's display height, `table[i].size.height × zoom`, which the view already
+  derives for placeholders (§4.3).
+
+Walk the visible indices from `item_ix`, accumulating display heights (less
+`offset_in_item` for the first), and clip each page's `[y_start, y_end)` against
+`[0, viewport_height)`. The clipped extent divided by the page's display height is the
+**fraction on screen**. Sort `visible` by that fraction descending, breaking ties by
+ascending index:
+
+```rust
+visible.sort_by(|a, b| {
+    fraction[b].total_cmp(&fraction[a]).then(a.cmp(b))
+});
+```
+
+Fraction rather than absolute pixels so a short page shown whole outranks a tall page
+shown half — the fully-visible page is the one being read whatever its physical size —
+and the index tie-break resolves two equally-visible pages top-to-bottom deterministically.
+This is pure presentation arithmetic: the session takes an ordered `Vec<usize>`, not a
+range, and treats the order as the send priority §5.3 relies on.
+
+Note this only affects *latency and drop-order*, never correctness: at a normal
+2–3-page viewport every visible page is served regardless of order, so the payoff is
+that the page in front of the user is the first to refresh after a keystroke and the
+last to be dropped at the 64-page cap.
 
 ### 4.3 Keeping `ListState` in sync
 

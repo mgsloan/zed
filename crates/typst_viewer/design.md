@@ -356,7 +356,17 @@ view\n{ visible: [...], prefetch: [...], cached?: [...], scale: 2.0,
         encoding: "raw", opaque?: true }
 ```
 
-- `visible` — on-screen indices, served first.
+- `visible` — on-screen indices, **ordered by the fraction of each page that is
+  on screen, ties broken by page index**, and served in that order. The order
+  matters: a viewport usually straddles a page boundary, so the top and bottom
+  pages are often slivers while a middle page fills the screen. Sending indices in
+  numeric order would then serve a barely-visible sliver before the page the user is
+  actually reading, and under a slow link, or at the 64-page cap, or simply for which
+  image decodes first, the page in front of them is the one that should refresh
+  first. Ranking by *fraction* rather than absolute pixels means a small page shown
+  in full outranks a large page shown half — the fully-visible page is the one being
+  read regardless of its physical size — and the index tie-break makes two
+  equally-visible pages resolve top-to-bottom (§4.2 on the client side).
 - `prefetch` — a margin around `visible`, **biased toward the scroll direction**.
 - `cached` (optional) — *additional* indices the client still holds beyond
   `prefetch`, so scrolling back needs no resend when content hasn't changed.

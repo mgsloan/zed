@@ -125,10 +125,13 @@ pub enum SessionEvent {
     PagesChanged(SmallVec<[usize; 8]>),
 }
 
-/// What the view has on screen, in indices.
+/// What the view has on screen.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Viewport {
-    pub visible: std::ops::Range<usize>,
+    /// On-screen indices, ordered by fraction-on-screen then index (§4.2 of the
+    /// design). The order is the send priority the server honors, so it is a
+    /// `Vec`, not a range.
+    pub visible: Vec<usize>,
     pub prefetch: std::ops::Range<usize>,
 }
 
@@ -235,7 +238,8 @@ impl PreviewSession {
         let mut seen = HashSet::default();
         self.viewport
             .visible
-            .clone()
+            .iter()
+            .copied()
             .chain(self.viewport.prefetch.clone())
             .chain(self.cached.iter().copied())
             .filter(|index| *index < self.table.len())
@@ -248,10 +252,12 @@ impl PreviewSession {
         let Some(outbox) = self.outbox.clone() else {
             return;
         };
+        // Preserve the fraction-then-index order: it is the send priority.
         let visible: Vec<usize> = self
             .viewport
             .visible
-            .clone()
+            .iter()
+            .copied()
             .filter(|i| *i < self.table.len())
             .collect();
         let prefetch: Vec<usize> = self
