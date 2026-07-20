@@ -7,9 +7,14 @@
 //!
 //! It drives tinymist LSP over stdin/stdout, opens the document, starts the
 //! preview server, then sends `textDocument/didChange` edits over the LSP and
-//! receives SVGs over the WebSocket data plane.  This exercises the real
+//! receives page images over the WebSocket data plane. This exercises the real
 //! incremental compilation path with comemo memoization — the same path used
 //! when the user types in the editor.
+//!
+//! It doubles as the **end-to-end check on the protocol**: it is the only thing
+//! that negotiates the subprotocol against a real tinymist, parses real frames,
+//! and decodes real payloads. If the wire format and the server disagree, this
+//! is where it shows.
 //!
 //! Run with:
 //!   cargo run --release --example typst_preview_bench
@@ -27,16 +32,16 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_tungstenite::WebSocketStream;
 use async_tungstenite::tungstenite::Message;
+use async_tungstenite::tungstenite::client::IntoClientRequest as _;
 use futures::StreamExt as _;
-use gpui::SvgRenderer;
 
 use smol::net::TcpStream;
-use typst_viewer::{DEFS_CLOSE, GLYPH_DEFS_OPEN, connect, inject_glyph_defs, parse_page_header};
+use typst_viewer::decode::decode_page;
+use typst_viewer::protocol::{SUBPROTOCOL, ServerMessage, parse_frame};
 
 fn main() {
     let Some(bin) = tinymist_bin() else {
@@ -161,48 +166,87 @@ fn copy_dir_shallow(src: &Path, dst: &Path) {
     }
 }
 
-/// Extract and cache glyph defs from an SVG (single-cache, for benchmarks).
-fn cache_defs(svg_bytes: &[u8], cache: &mut Option<String>) {
-    let svg_str = String::from_utf8_lossy(svg_bytes);
-    if let Some(start) = svg_str.find(GLYPH_DEFS_OPEN) {
-        if let Some(end_offset) = svg_str[start..].find(DEFS_CLOSE) {
-            let defs_end = start + end_offset + DEFS_CLOSE.len();
-            *cache = Some(svg_str[start..defs_end].to_string());
-        }
-    }
+/// Connects to the data plane, negotiating the page-image subprotocol.
+///
+/// A refused upgrade means this tinymist predates the protocol.
+async fn connect_page_images(port: u64) -> anyhow::Result<WebSocketStream<TcpStream>> {
+    let addr = format!("127.0.0.1:{port}");
+    let tcp = TcpStream::connect(&addr).await?;
+    let mut request = format!("ws://{addr}").as_str().into_client_request()?;
+    let headers = request.headers_mut();
+    headers.insert("Origin", format!("http://{addr}").parse()?);
+    headers.insert("Sec-WebSocket-Protocol", SUBPROTOCOL.parse()?);
+
+    let (ws, response) = async_tungstenite::client_async(request, tcp)
+        .await
+        .map_err(|err| anyhow::anyhow!("handshake failed (is tinymist new enough?): {err}"))?;
+
+    let agreed = response
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok());
+    anyhow::ensure!(
+        agreed == Some(SUBPROTOCOL),
+        "server did not agree to {SUBPROTOCOL}; got {agreed:?}"
+    );
+    Ok(ws)
 }
 
-fn rasterize_full(svg_renderer: &SvgRenderer, svg_bytes: &[u8]) -> anyhow::Result<Duration> {
-    let start = Instant::now();
-    let _image = svg_renderer.render_single_frame(svg_bytes, 1.0)?;
-    Ok(start.elapsed())
+/// One page image received and decoded.
+struct ReceivedPage {
+    payload_bytes: usize,
+    decode: Duration,
+    px: (u32, u32),
 }
 
-/// Receive the next SVG from the WebSocket, skipping binary/non-SVG messages.
-async fn receive_ws_svg(ws: &mut WebSocketStream<TcpStream>) -> anyhow::Result<Vec<u8>> {
+/// Reads frames until a page image arrives, decoding it the way the viewer does.
+///
+/// Table and error frames are reported rather than skipped silently: a run that
+/// only ever sees `pages` means images are not flowing, which is exactly the
+/// failure this harness exists to catch.
+async fn receive_page_image(
+    ws: &mut WebSocketStream<TcpStream>,
+    label: &str,
+) -> anyhow::Result<ReceivedPage> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if Instant::now() > deadline {
-            anyhow::bail!("timeout waiting for SVG (30s)");
+            anyhow::bail!("{label}: timeout waiting for a page image (30s)");
         }
-        match ws.next().await {
-            Some(Ok(Message::Text(text))) => {
-                let svg_text = if let Some((_, svg)) = parse_page_header(&text) {
-                    svg.to_string()
-                } else if text.contains("<svg") {
-                    text.to_string()
-                } else {
-                    continue;
-                };
-                if svg_text.contains("<svg") {
-                    return Ok(svg_text.into_bytes());
-                }
-            }
-            Some(Ok(Message::Binary(_))) => continue,
-            Some(Ok(Message::Close(f))) => anyhow::bail!("WebSocket closed: {f:?}"),
+        let frame = match ws.next().await {
+            Some(Ok(Message::Binary(bytes))) => bytes.to_vec(),
+            Some(Ok(Message::Text(text))) => text.as_bytes().to_vec(),
+            Some(Ok(Message::Close(f))) => anyhow::bail!("{label}: WebSocket closed: {f:?}"),
             Some(Ok(_)) => continue,
-            Some(Err(e)) => anyhow::bail!("WebSocket error: {e}"),
-            None => anyhow::bail!("WebSocket stream ended"),
+            Some(Err(e)) => anyhow::bail!("{label}: WebSocket error: {e}"),
+            None => anyhow::bail!("{label}: WebSocket stream ended"),
+        };
+
+        match parse_frame(&frame)? {
+            Some(ServerMessage::Pages { total, full, .. }) => {
+                eprintln!("  [pages] total={total} full={full}");
+            }
+            Some(ServerMessage::Error { content, msg }) => {
+                anyhow::bail!("{label}: server refused to render {content}: {msg}");
+            }
+            Some(ServerMessage::Image {
+                px_width,
+                px_height,
+                scale,
+                encoding,
+                payload,
+                ..
+            }) => {
+                let bytes = &frame[payload.clone()];
+                let start = Instant::now();
+                decode_page(bytes, px_width, px_height, encoding, scale)?;
+                return Ok(ReceivedPage {
+                    payload_bytes: payload.len(),
+                    decode: start.elapsed(),
+                    px: (px_width, px_height),
+                });
+            }
+            None => {}
         }
     }
 }
@@ -213,9 +257,8 @@ async fn receive_ws_svg(ws: &mut WebSocketStream<TcpStream>) -> anyhow::Result<V
 
 struct IterResult {
     compile_ms: f64,
-    svg_bytes: usize,
-    raster_ms: f64,
-    has_defs: bool,
+    payload_bytes: usize,
+    decode_ms: f64,
 }
 
 fn print_summary(results: &[IterResult]) {
@@ -234,8 +277,8 @@ fn print_summary(results: &[IterResult]) {
     };
     let metrics: [(&str, fn(&IterResult) -> f64); 3] = [
         ("compile", |r| r.compile_ms),
-        ("raster", |r| r.raster_ms),
-        ("total", |r| r.compile_ms + r.raster_ms),
+        ("decode", |r| r.decode_ms),
+        ("total", |r| r.compile_ms + r.decode_ms),
     ];
     eprintln!(
         "              {:>8} {:>8} {:>8} {:>8}",
@@ -245,15 +288,9 @@ fn print_summary(results: &[IterResult]) {
         let (avg, p50, p95, min) = stats(f);
         eprintln!("{name:<12}: {avg:8.1} {p50:8.1} {p95:8.1} {min:8.1} ms");
     }
-    let avg_svg_kb =
-        results.iter().map(|r| r.svg_bytes as f64).sum::<f64>() / results.len() as f64 / 1024.0;
-    let defs_count = results.iter().filter(|r| r.has_defs).count();
-    eprintln!("avg SVG size: {avg_svg_kb:.1} KB");
-    eprintln!(
-        "defs present: {defs_count}/{} frames ({:.0}%)",
-        results.len(),
-        defs_count as f64 / results.len() as f64 * 100.0,
-    );
+    let avg_kib =
+        results.iter().map(|r| r.payload_bytes as f64).sum::<f64>() / results.len() as f64 / 1024.0;
+    eprintln!("avg payload: {avg_kib:.1} KiB");
 }
 
 // -----------------------------------------------------------------------
@@ -273,7 +310,6 @@ fn chop_heading(current: &mut String, original: &str) {
 
 fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
     let iterations = bench_iters();
-    let svg_renderer = SvgRenderer::new(Arc::new(()));
 
     eprintln!("=== Typst Preview Benchmark (LSP + comemo) ===");
     eprintln!("tinymist:   {}", bin.display());
@@ -349,17 +385,18 @@ fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
             "workspace/executeCommand",
             serde_json::json!({
                 "command": "tinymist.doStartPreview",
+                // No flag selects the mode: the subprotocol offered at connect
+                // does. `--page-images` only gates availability server-side.
                 "arguments": [[
-                    "--server-svg",
-                    "--strip-svg-glyph-defs",
+                    "--page-images=true",
                     "--data-plane-host=127.0.0.1:0",
                     work_doc.to_str().unwrap()
                 ]]
             }),
         );
-        let preview_result = preview_resp
-            .get("result")
-            .expect("doStartPreview returned no result");
+        let preview_result = preview_resp.get("result").unwrap_or_else(|| {
+            panic!("doStartPreview returned no result; full response: {preview_resp}")
+        });
         let data_plane_port = preview_result
             .get("dataPlanePort")
             .and_then(|v| v.as_u64())
@@ -367,23 +404,33 @@ fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
         eprintln!("preview data plane port: {data_plane_port}");
 
         // Connect WebSocket.
-        let ws_url = format!("ws://127.0.0.1:{data_plane_port}");
-        let mut ws = connect(&ws_url).await.expect("WebSocket connect");
-
-        ws.send(Message::text("current"))
+        let mut ws = connect_page_images(data_plane_port)
             .await
-            .expect("send current");
+            .expect("negotiating the page-image subprotocol");
 
-        let initial_svg = receive_ws_svg(&mut ws).await.expect("receive initial SVG");
-        eprintln!("initial SVG: {} bytes", initial_svg.len());
+        // No `current`: the server sends the page table on connect. Subscribing
+        // is what starts images flowing.
+        let view = serde_json::json!({
+            "visible": [0],
+            "prefetch": [1],
+            "cached": [],
+            "scale": 2.0,
+            "encoding": "raw",
+            "opaque": true,
+        });
+        ws.send(Message::text(format!("view\n{view}")))
+            .await
+            .expect("send view");
 
-        let mut cached_defs: Option<String> = None;
-        cache_defs(&initial_svg, &mut cached_defs);
-
-        let warmup = rasterize_full(&svg_renderer, &initial_svg);
+        let warmup = receive_page_image(&mut ws, "warmup")
+            .await
+            .expect("receive the first page image");
         eprintln!(
-            "warmup rasterize: {:.1}ms",
-            warmup.map(|d| d.as_secs_f64() * 1000.0).unwrap_or(-1.0),
+            "warmup: {}x{} px, {} KiB payload, decode {:.1}ms",
+            warmup.px.0,
+            warmup.px.1,
+            warmup.payload_bytes / 1024,
+            warmup.decode.as_secs_f64() * 1000.0,
         );
         eprintln!();
 
@@ -411,37 +458,21 @@ fn bench_preview_lsp(bin: &Path, doc_path: &Path) {
                 }),
             );
 
-            let svg_bytes = receive_ws_svg(&mut ws)
+            let page = receive_page_image(&mut ws, &format!("iter {i}"))
                 .await
-                .unwrap_or_else(|e| panic!("iter {i}: SVG receive error: {e}"));
+                .unwrap_or_else(|e| panic!("iter {i}: {e}"));
             let compile_dur = change_start.elapsed();
 
-            let has_defs = std::str::from_utf8(&svg_bytes)
-                .map(|s| s.contains(GLYPH_DEFS_OPEN))
-                .unwrap_or(false);
-
-            let mut raster_svg = svg_bytes.clone();
-            if has_defs {
-                cache_defs(&svg_bytes, &mut cached_defs);
-            } else if let Some(ref defs) = cached_defs {
-                raster_svg = inject_glyph_defs(&raster_svg, defs);
-            }
-
-            let raster_dur = rasterize_full(&svg_renderer, &raster_svg).unwrap_or(Duration::ZERO);
-
             let compile_ms = compile_dur.as_secs_f64() * 1000.0;
-            let raster_ms = raster_dur.as_secs_f64() * 1000.0;
-            let svg_bytes = raster_svg.len();
+            let decode_ms = page.decode.as_secs_f64() * 1000.0;
             eprintln!(
-                "iter {i:2}: compile={compile_ms:6.1}ms  svg={svg_bytes:7}B  \
-                 raster={raster_ms:6.1}ms  defs={}",
-                if has_defs { "Y" } else { "N" },
+                "iter {i:2}: compile={compile_ms:6.1}ms  payload={:7}B  decode={decode_ms:6.1}ms",
+                page.payload_bytes,
             );
             results.push(IterResult {
                 compile_ms,
-                svg_bytes,
-                raster_ms,
-                has_defs,
+                payload_bytes: page.payload_bytes,
+                decode_ms,
             });
         }
 

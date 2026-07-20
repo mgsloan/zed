@@ -14,6 +14,7 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
+collections.workspace = true
 async-tungstenite.workspace = true
 futures.workspace = true
 gpui.workspace = true
